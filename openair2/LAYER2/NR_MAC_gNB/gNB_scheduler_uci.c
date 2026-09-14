@@ -400,6 +400,32 @@ static void handle_dl_harq(NR_UE_info_t * UE,
 {
   NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
   NR_UE_harq_t *harq = &sched_ctrl->harq_processes[harq_pid];
+
+  // Record HARQ feedback in MCS history (for link adaptation plugins).
+  // Only first-round feedback is recorded so a NACK->retry->ACK sequence
+  // counts as a single NACK (otherwise every retry inflates the history).
+  // When the buffer is full we overwrite the oldest entry and advance the
+  // head index, implementing a proper circular buffer.
+  if (harq->round == 0) {
+    NR_mcs_history_t *hist = &sched_ctrl->mcs_history;
+    NR_mcs_history_entry_t *entry;
+    if (hist->count < MAX_MCS_HISTORY) {
+      entry = &hist->entries[hist->tail];
+      hist->tail = (hist->tail + 1) % MAX_MCS_HISTORY;
+      hist->count++;
+    } else {
+      // Buffer full: overwrite oldest entry at head
+      entry = &hist->entries[hist->head];
+      hist->head = (hist->head + 1) % MAX_MCS_HISTORY;
+      hist->tail = (hist->tail + 1) % MAX_MCS_HISTORY;
+    }
+    entry->mcs = harq->sched_pdsch.mcs;
+    entry->success = success ? 1 : 0;
+    entry->timestamp = (harq->feedback_frame << 16) | harq->feedback_slot;
+    entry->tb_size = harq->sched_pdsch.tb_size;
+    entry->spectral_efficiency = (float)harq->sched_pdsch.Qm * (float)harq->sched_pdsch.R / 1024.0f;
+  }
+
   harq->feedback_slot = -1;
   harq->is_waiting = false;
   if (success) {

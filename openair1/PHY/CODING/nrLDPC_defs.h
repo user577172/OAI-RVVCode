@@ -74,6 +74,7 @@ typedef struct {
 } encoder_implemparams_t;
 
 typedef int32_t(LDPC_initfunc_t)(void);
+typedef int32_t(LDPC_threadinitfunc_t)(void);
 typedef int32_t(LDPC_shutdownfunc_t)(void);
 
 // decoder interface

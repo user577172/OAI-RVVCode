@@ -132,9 +132,31 @@ int16_t find_nr_prach_ru(RU_t *ru,int frame,int slot, find_type_t type)
 void nr_fill_prach_ru(RU_t *ru, int SFN, int Slot, nfapi_nr_prach_pdu_t *prach_pdu, int *beam_id)
 {
   int prach_id = find_nr_prach_ru(ru, SFN, Slot, SEARCH_EXIST_OR_FREE);
-  AssertFatal((prach_id >= 0) && (prach_id < NUMBER_OF_NR_PRACH_MAX),
-              "illegal or no prach_id found!!! prach_id %d\n",
-              prach_id);
+  
+  // Handle full PRACH list gracefully - reuse oldest entry instead of crashing
+  if (prach_id < 0 || prach_id >= NUMBER_OF_NR_PRACH_MAX) {
+    LOG_W(PHY, "PRACH list full! Looking for oldest entry to reuse (frame %d, slot %d)\n", SFN, Slot);
+    
+    pthread_mutex_lock(&ru->prach_list_mutex);
+    // Find the oldest entry (smallest frame.slot combination)
+    int oldest_id = 0;
+    int oldest_frame = ru->prach_list[0].frame;
+    int oldest_slot = ru->prach_list[0].slot;
+    
+    for (int i = 1; i < NUMBER_OF_NR_RU_PRACH_MAX; i++) {
+      if (ru->prach_list[i].frame < oldest_frame ||
+          (ru->prach_list[i].frame == oldest_frame && ru->prach_list[i].slot < oldest_slot)) {
+        oldest_id = i;
+        oldest_frame = ru->prach_list[i].frame;
+        oldest_slot = ru->prach_list[i].slot;
+      }
+    }
+    
+    prach_id = oldest_id;
+    LOG_W(PHY, "Reusing PRACH entry %d (was frame %d, slot %d, now frame %d, slot %d)\n",
+          prach_id, oldest_frame, oldest_slot, SFN, Slot);
+    pthread_mutex_unlock(&ru->prach_list_mutex);
+  }
 
   pthread_mutex_lock(&ru->prach_list_mutex);
   ru->prach_list[prach_id].frame = SFN;

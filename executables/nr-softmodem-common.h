@@ -96,6 +96,8 @@
 #define CONFIG_HLP_TELN          "Start embedded telnet server \n"
 #define CONFIG_HLP_SNR           "Set average SNR in dB (for --siml1 option)\n"
 #define CONFIG_HLP_NOS1          "Disable s1 interface\n"
+#define CONFIG_HLP_CIRFOLDER     "Path to CIR folder for channel emulation (enables channel emulation when set)\n"
+#define CONFIG_HLP_CIRZMQTAPS   "Number of CIR taps for ZMQ-based channel emulation (enables cir_zmq when set)\n"
 
 /*--------------------------------------------------------------------------------------------------------------------------------*/
 /*                                            command line parameters for LOG utility                                             */

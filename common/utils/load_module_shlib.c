@@ -202,7 +202,10 @@ int load_module_version_shlib(char *modname, char *version, loader_shlibfunc_t *
       shlib->numfunc = 0;
     }
     for (int i = 0; i < numf; i++) {
-      farray[i].fptr = dlsym(lib_handle,farray[i].fname);
+      loader_shlibfunc_t lfun = farray[i];
+      lfun.fptr = dlsym(lib_handle,farray[i].fname);
+      if (lfun.fptr)
+        farray[i].fptr = lfun.fptr;
       if (!farray[i].fptr) {
         fprintf(stderr, "[LOADER] load_module_shlib(): function %s not found: %s\n",
                   farray[i].fname, dlerror());

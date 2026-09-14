@@ -272,6 +272,8 @@ typedef struct RU_proc_t_s {
   pthread_t pthread_feptx;
   /// pthread structure for asychronous RX/TX processing thread
   pthread_t pthread_asynch_rxtx;
+  /// pthread structure for RU CIR ZMQ receiver thread
+  pthread_t pthread_cir_zmq;
   /// flag to indicate first RX acquisition
   int first_rx;
   /// flag to indicate first TX transmission

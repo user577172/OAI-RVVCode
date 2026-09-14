@@ -157,6 +157,22 @@ static void write_task_output(uint8_t *f,
     output_p++;
   }
        
+#elif defined(__riscv)
+  // Portable scalar fallback. Each input byte contains one bit from up to
+  // eight segments; write each segment contiguously into the packed output.
+  uint32_t segment_offset = Eoffset;
+  for (uint32_t j = 0; j < nb_segments; j++) {
+    const bool first_group = j < E2_first_segment;
+    const uint8_t *src = first_group ? f : f2;
+    const uint32_t segment_bits = first_group ? E : E2;
+    for (uint32_t i = 0; i < segment_bits; i++) {
+      const uint8_t bit = (src[i] >> j) & 1U;
+      const uint32_t output_bit = segment_offset + i;
+      output[output_bit >> 3] |= bit << (output_bit & 7);
+    }
+    segment_offset += segment_bits;
+  }
+
 #else
   uint32_t *output_p = (uint32_t*)output;
 

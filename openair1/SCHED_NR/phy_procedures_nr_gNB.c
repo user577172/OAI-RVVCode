@@ -41,11 +41,76 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <errno.h>
+#include <string.h>
 #include <openair1/PHY/TOOLS/phy_scope_interface.h>
 #include "PHY/log_tools.h"
 
 //#define DEBUG_RXDATA
 //#define SRS_IND_DEBUG
+
+/*
+ * Optional per-transport-block export for the K3 RFsim channel experiment.
+ * It is deliberately controlled by an environment variable so the native
+ * accumulated timing runs have no CSV I/O overhead.
+ */
+static pthread_mutex_t ul_tb_csv_mutex = PTHREAD_MUTEX_INITIALIZER;
+static FILE *ul_tb_csv;
+static uint64_t ul_tb_csv_sequence;
+
+static void export_ul_tb_csv(const NR_gNB_ULSCH_t *ulsch, const NR_gNB_PUSCH *pusch, bool crc_ok)
+{
+  const char *path = getenv("OAI_UL_TB_CSV");
+  if (path == NULL || path[0] == '\0')
+    return;
+
+  const NR_UL_gNB_HARQ_t *harq = ulsch->harq_process;
+  const nfapi_nr_pusch_pdu_t *pdu = &harq->ulsch_pdu;
+  const int signal_x10 = dB_fixed_x10(pusch->ulsch_power_tot);
+  const int noise_x10 = dB_fixed_x10(pusch->ulsch_noise_power_tot);
+  const double iterations_per_cb = ulsch->last_ldpc_segments > 0
+                                       ? (double)ulsch->last_ldpc_iterations_sum / ulsch->last_ldpc_segments
+                                       : 0.0;
+
+  pthread_mutex_lock(&ul_tb_csv_mutex);
+  if (ul_tb_csv == NULL) {
+    ul_tb_csv = fopen(path, "w");
+    if (ul_tb_csv == NULL) {
+      LOG_E(NR_PHY, "Cannot open OAI_UL_TB_CSV=%s: %s\n", path, strerror(errno));
+      pthread_mutex_unlock(&ul_tb_csv_mutex);
+      return;
+    }
+    fprintf(ul_tb_csv,
+            "sequence,frame,slot,rnti,harq_pid,harq_round,rv,rb_size,mcs,qm,tbs_bytes,num_codeblocks,"
+            "ldpc_iterations_sum,ldpc_iterations_per_cb,ldpc_time_us,crc_ok,dtx,signal_db,noise_db,snr_db\n");
+  }
+  fprintf(ul_tb_csv,
+          "%lu,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%.6f,%.6f,%u,%d,%.1f,%.1f,%.1f\n",
+          (unsigned long)ul_tb_csv_sequence++,
+          ulsch->frame,
+          ulsch->slot,
+          ulsch->rnti,
+          ulsch->harq_pid,
+          harq->round,
+          pdu->pusch_data.rv_index,
+          pdu->rb_size,
+          pdu->mcs_index,
+          pdu->qam_mod_order,
+          harq->TBS,
+          ulsch->last_ldpc_segments,
+          ulsch->last_ldpc_iterations_sum,
+          iterations_per_cb,
+          ulsch->last_ldpc_time_us,
+          crc_ok,
+          pusch->DTX,
+          signal_x10 / 10.0,
+          noise_x10 / 10.0,
+          (signal_x10 - noise_x10) / 10.0);
+  fflush(ul_tb_csv);
+  pthread_mutex_unlock(&ul_tb_csv_mutex);
+}
 
 int beam_index_allocation(bool das,
                           int fapi_beam_index,
@@ -492,7 +557,9 @@ static int nr_ulsch_procedures(PHY_VARS_gNB *gNB, int frame_rx, int slot_rx, boo
 
     nfapi_nr_crc_t *crc = &UL_INFO->crc_ind.crc_list[UL_INFO->crc_ind.number_crcs++];
     nfapi_nr_rx_data_pdu_t *pdu = &UL_INFO->rx_ind.pdu_list[UL_INFO->rx_ind.number_of_pdus++];
-    if (crc_valid && !check_abort(&ulsch_harq->abort_decode) && !pusch->DTX) {
+    const bool tb_crc_ok = crc_valid && !check_abort(&ulsch_harq->abort_decode) && !pusch->DTX;
+    export_ul_tb_csv(ulsch, pusch, tb_crc_ok);
+    if (tb_crc_ok) {
       LOG_D(NR_PHY,
             "[gNB %d] ULSCH %d: Setting ACK for SFN/SF %d.%d (rnti %x, pid %d, ndi %d, status %d, round %d, TBS %d, Max interation "
             "(all seg) %d)\n",

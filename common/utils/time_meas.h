@@ -35,7 +35,7 @@
 extern int cpu_meas_enabled;
 extern double cpu_freq_GHz  __attribute__ ((aligned(32)));;
 // structure to store data to compute cpu measurment
-#if defined(__x86_64__) || defined(__i386__) || defined(__arm__) || defined(__aarch64__)
+#if defined(__x86_64__) || defined(__i386__) || defined(__arm__) || defined(__aarch64__) || defined(__riscv)
   typedef long long oai_cputime_t;
 #else
   #error "building on unsupported CPU architecture"
@@ -100,6 +100,22 @@ static inline unsigned long long rdtsc_oai(void) {
   __asm__ volatile ("rdtsc" : "=a" (a), "=d" (d));
   return (d<<32) | a;
 }
+#elif defined(__riscv)
+/*
+ * Linux may disable user-space access to the RISC-V cycle counter.  Using
+ * rdcycle then raises SIGILL on K3, so use the kernel-provided monotonic clock.
+ * The returned unit is nanoseconds; get_cpu_freq_GHz() consequently evaluates
+ * to 1.0 and the existing cycle-to-time formulas remain valid.
+ */
+static inline uint64_t rdtsc_oai(void) __attribute__((always_inline));
+static inline uint64_t rdtsc_oai(void)
+{
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0)
+    return 0;
+  return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 #elif defined(__aarch64__)
 static inline uint64_t rdtsc_oai(void) __attribute__((always_inline));
 static inline uint64_t rdtsc_oai(void)

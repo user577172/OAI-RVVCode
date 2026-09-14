@@ -3,7 +3,7 @@
  * contributor license agreements.  See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
  * The OpenAirInterface Software Alliance licenses this file to You under
- * the OAI Public License, Version 1.1  (the "License"); you may not use this file
+ * the OAI Public License, Version 1.0  (the "License"); you may not use this file
  * except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -18,26 +18,38 @@
  * For more information about the OpenAirInterface (OAI) Software Alliance:
  *      contact@openairinterface.org
  */
-#ifndef _NRLDPC_EXTERN_H__
-#define _NRLDPC_EXTERN_H__
-#include "openair1/PHY/CODING/nrLDPC_defs.h"
-/* LDPC maximum code block size - maximum E */
-#define LDPC_MAX_CB_SIZE 32768
-/* ldpc coder/decoder API*/
-typedef struct ldpc_interface_s {
-  LDPC_initfunc_t *LDPCinit;
-  LDPC_threadinitfunc_t *LDPCthreadinit;
-  LDPC_shutdownfunc_t *LDPCshutdown;
-  LDPC_decoderfunc_t *LDPCdecoder;
-  LDPC_encoderfunc_t *LDPCencoder;
-} ldpc_interface_t;
 
-/* functions to load the LDPC shared lib, implemented in openair1/PHY/CODING/nrLDPC_load.c */
-int load_LDPClib(char *version, ldpc_interface_t *);
-int free_LDPClib(ldpc_interface_t *ldpc_interface);
+/*! \file PHY/CODING/nrLDPC_coding/nrLDPC_coding_segment/nrLDPC_coding_segment_decoder.c
+ * \brief Top-level routines for decoding LDPC transport channels
+ */
 
-LDPC_decoderfunc_t LDPCdecoder;
-LDPC_encoderfunc_t LDPCencoder;
+// [from gNB coding]
+#include "PHY/defs_gNB.h"
+#include "PHY/CODING/coding_extern.h"
+#include "PHY/CODING/coding_defs.h"
+#include "PHY/CODING/nrLDPC_coding/nrLDPC_coding_interface.h"
+#include "PHY/CODING/nrLDPC_extern.h"
+#include "defs.h"
+#include "common/utils/LOG/log.h"
 
-// inline functions:
-#endif
+#include <stdalign.h>
+#include <stdint.h>
+#include <syscall.h>
+#include <time.h>
+// #define gNB_DEBUG_TRACE
+
+int32_t nrLDPC_coding_init(void)
+{
+  return 0;
+}
+
+int32_t nrLDPC_coding_threadinit(void)
+{
+  return 0;
+}
+
+int32_t nrLDPC_coding_shutdown(void)
+{
+  return 0;
+}
+

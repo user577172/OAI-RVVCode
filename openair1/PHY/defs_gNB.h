@@ -238,6 +238,10 @@ typedef struct {
   uint8_t max_ldpc_iterations;
   /// number of iterations used in last LDPC decoding
   int8_t last_iteration_cnt;
+  /// Per-TB LDPC statistics used by the optional RV64 RFsim CSV exporter.
+  uint32_t last_ldpc_iterations_sum;
+  uint32_t last_ldpc_segments;
+  double last_ldpc_time_us;
   /// Status Flag indicating for this ULSCH
   bool active;
   /// Flag to indicate that the UL configuration has been handled. Used to remove a stale ULSCH when frame wraps around
@@ -527,6 +531,9 @@ typedef struct PHY_VARS_gNB_s {
   time_stats_t ulsch_deinterleaving_stats;
   time_stats_t ulsch_channel_estimation_stats;
   time_stats_t pusch_channel_estimation_antenna_processing_stats;
+  time_stats_t ulsch_channel_measurement_stats;
+  time_stats_t ulsch_resource_extraction_stats;
+  time_stats_t ulsch_channel_compensation_stats;
   time_stats_t ulsch_llr_stats;
   time_stats_t rx_srs_stats;
   time_stats_t generate_srs_stats;

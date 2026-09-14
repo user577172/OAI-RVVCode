@@ -291,6 +291,9 @@ int nr_ulsch_decoding(PHY_VARS_gNB *phy_vars_gNB,
     NR_UL_gNB_HARQ_t *harq_process = ulsch->harq_process;
 
     nrLDPC_TB_decoding_parameters_t TB_parameters = TBs[pusch_id];
+    ulsch->last_ldpc_iterations_sum = 0;
+    ulsch->last_ldpc_segments = TB_parameters.C;
+    ulsch->last_ldpc_time_us = 0.0;
 
     uint32_t offset = 0;
     for (int r = 0; r < TB_parameters.C; r++) {
@@ -309,6 +312,8 @@ int nr_ulsch_decoding(PHY_VARS_gNB *phy_vars_gNB,
       merge_meas(&phy_vars_gNB->ts_deinterleave, &nrLDPC_segment_decoding_parameters.ts_deinterleave);
       merge_meas(&phy_vars_gNB->ts_rate_unmatch, &nrLDPC_segment_decoding_parameters.ts_rate_unmatch);
       merge_meas(&phy_vars_gNB->ts_ldpc_decode, &nrLDPC_segment_decoding_parameters.ts_ldpc_decode);
+      ulsch->last_ldpc_iterations_sum += nrLDPC_segment_decoding_parameters.decodeIterations;
+      ulsch->last_ldpc_time_us += get_time_meas_us(&nrLDPC_segment_decoding_parameters.ts_ldpc_decode);
     }
   }
 

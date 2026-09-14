@@ -60,14 +60,12 @@ bool read_mac_sm(void* data)
     rd->dl_aggr_tbs = UE->mac_stats.dl.total_bytes;
     rd->ul_aggr_tbs = UE->mac_stats.ul.total_bytes;
 
-    if (is_dl_slot(rd->slot, &RC.nrmac[mod_id]->frame_structure)) {
-      rd->dl_curr_tbs = UE->mac_stats.dl.current_bytes;
-      rd->dl_sched_rb = UE->mac_stats.dl.current_rbs;
-    }
-    if (is_ul_slot(rd->slot, &RC.nrmac[mod_id]->frame_structure)) {
-      rd->ul_curr_tbs = UE->mac_stats.ul.current_bytes;
-      rd->ul_sched_rb = UE->mac_stats.ul.current_rbs;
-    }
+    // Remove slot checks - slot is hardcoded to 0 anyway, and current_rbs
+    // already contains the accumulated stats across parallel slot processing
+    rd->dl_curr_tbs = UE->mac_stats.dl.current_bytes;
+    rd->dl_sched_rb = UE->mac_stats.dl.current_rbs;
+    rd->ul_curr_tbs = UE->mac_stats.ul.current_bytes;
+    rd->ul_sched_rb = UE->mac_stats.ul.current_rbs;
 
     rd->rnti = UE->rnti;
     rd->dl_aggr_prb = UE->mac_stats.dl.total_rbs;

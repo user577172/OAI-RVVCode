@@ -19,6 +19,7 @@
  *      contact@openairinterface.org
  */
 
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,9 @@
 #include <linux/sched.h>
 #include <sys/sysinfo.h>
 #include <math.h>
+#ifdef PRINT_TIMES
+#include <time.h>
+#endif
 
 #include "common/utils/nr/nr_common.h"
 #include "common/utils/assertions.h"
@@ -67,6 +71,9 @@ static int DEFRUTPCORES[] = {-1,-1,-1,-1};
 #include "nfapi_interface.h"
 #include <nfapi/oai_integration/vendor_ext.h>
 #include "executables/nr-softmodem-common.h"
+
+// Add this near the top of the file with other includes:
+#include "plugins/common/src/plugins.h"
 
 static void NRRCconfig_RU(configmodule_interface_t *cfg);
 
@@ -292,7 +299,7 @@ void fh_if5_south_in(RU_t *ru,
                      int *tti) {
   NR_DL_FRAME_PARMS *fp = ru->nr_frame_parms;
   RU_proc_t *proc = &ru->proc;
-  VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME( VCD_SIGNAL_DUMPER_FUNCTIONS_RECV_IF5, 1 );   
+  VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME( VCD_SIGNAL_DUMPER_FUNCTIONS_RECV_IF5, 1 );
   start_meas(&ru->rx_fhaul);
 
   ru->ifdevice.trx_read_func2(&ru->ifdevice, &proc->timestamp_rx, NULL, fp->get_samples_per_slot(*tti, fp));
@@ -583,6 +590,7 @@ static void rx_rf(RU_t *ru, int *frame, int *slot)
   unsigned int rxs;
   rxs = ru->rfdevice.trx_read_func(&ru->rfdevice, &ts, rxp, samples_per_slot, nb);
 
+
   VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME( VCD_SIGNAL_DUMPER_FUNCTIONS_TRX_READ, 0 );
   proc->timestamp_rx = ts-ru->ts_offset;
 
@@ -602,12 +610,25 @@ static void rx_rf(RU_t *ru, int *frame, int *slot)
     }
   }
 
+  // Emulates the channel using the plugin system (if enabled)
+  if (is_channel_emulation_enabled()) {
+    // Offset in the ru->common.rxdata buffer from which the slot samples start
+    const int data_offset = fp->get_samples_slot_timestamp(*slot, fp, 0) - ru->N_TA_offset;
+    // Read CIR data and update channel emulator sigma values
+    const void *cir_data = channel_emulator_cir_read_and_apply();
+    // Apply channel emulation
+    chn_emu_interface.compute(ru, *slot, fp,
+                               fp->ofdm_symbol_size + fp->nb_prefix_samples0,  // samples_first_symbol
+                               fp->ofdm_symbol_size + fp->nb_prefix_samples,   // samples_other_symbols
+                               "rx", data_offset, cir_data);
+  }
+
   // compute system frame number (SFN) according to O-RAN-WG4-CUS.0-v02.00 (using alpha=beta=0)
   //  this assumes that the USRP has been synchronized to the GPS time
   //  OAI uses timestamps in sample time stored in int64_t, but it will fit in double precision for many years to come.
   double gps_sec = ((double)ts) / cfg->sample_rate;
 
-  // in fact the following line is the same as long as the timestamp_rx is synchronized to GPS. 
+  // in fact the following line is the same as long as the timestamp_rx is synchronized to GPS.
   proc->frame_rx    = (proc->timestamp_rx / (fp->samples_per_subframe*10))&1023;
   proc->tti_rx = fp->get_slot_from_timestamp(proc->timestamp_rx,fp);
   // synchronize first reception to frame 0 subframe 0
@@ -788,9 +809,18 @@ void tx_rf(RU_t *ru, int frame,int slot, uint64_t timestamp)
   for (int i = 0; i < nt; i++)
     txp[i] = (void *)&ru->common.txdata[i][fp->get_samples_slot_timestamp(slot, fp, 0)] - sf_extension * sizeof(int32_t);
 
+  // Apply DL channel emulation before trx_write so the UE receives the faded signal
+  if (is_channel_emulation_enabled()) {
+    const int data_offset = fp->get_samples_slot_timestamp(slot, fp, 0) - sf_extension;
+    const void *cir_data = channel_emulator_cir_read_and_apply();
+    chn_emu_interface.compute(ru, slot, fp,
+                               fp->ofdm_symbol_size + fp->nb_prefix_samples0,  // samples_first_symbol
+                               fp->ofdm_symbol_size + fp->nb_prefix_samples,   // samples_other_symbols
+                               "tx", data_offset, cir_data);
+  }
+
   VCD_SIGNAL_DUMPER_DUMP_VARIABLE_BY_NAME(VCD_SIGNAL_DUMPER_VARIABLES_TRX_TST, (timestamp + ru->ts_offset) & 0xffffffff);
   VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_TRX_WRITE, 1);
-  // prepare tx buffer pointers
   uint32_t txs = ru->rfdevice.trx_write_func(&ru->rfdevice,
                                              timestamp + ru->ts_offset - sf_extension,
                                              txp,
@@ -858,7 +888,7 @@ static void fill_rf_config(RU_t *ru, char *rf_config_file)
     }
 
     cfg->tx_gain[i] = ru->att_tx;
-    LOG_I(PHY, "Channel %d: setting tx_gain offset %.0f, tx_freq %.0f Hz\n", 
+    LOG_I(PHY, "Channel %d: setting tx_gain offset %.0f, tx_freq %.0f Hz\n",
           i, cfg->tx_gain[i],cfg->tx_freq[i]);
   }
 
@@ -1131,7 +1161,21 @@ void *ru_thread(void *param)
   struct timespec slot_start;
   clock_gettime(CLOCK_MONOTONIC, &slot_start);
 
+  #ifdef PRINT_TIMES
+  // Variables for average timing calculation
+  long total_duration_ns = 0;
+  int iteration_count = 0;
+  const int TIMING_WINDOW = 1000;
+  #endif
+
+
   while (!oai_exit) {
+
+    #ifdef PRINT_TIMES
+    struct timespec loop_start, loop_end;
+    clock_gettime(CLOCK_MONOTONIC, &loop_start);
+    #endif
+
     if (slot==(fp->slots_per_frame-1)) {
       slot=0;
       frame++;
@@ -1242,6 +1286,28 @@ void *ru_thread(void *param)
                                          .slot_rx = proc->tti_rx,
                                          .timestamp_tx = proc->timestamp_tx};
     pushNotifiedFIFO(&gNB->L1_tx_out, resTx);
+
+    #ifdef PRINT_TIMES
+    clock_gettime(CLOCK_MONOTONIC, &loop_end);
+    long loop_duration_ns = (loop_end.tv_sec - loop_start.tv_sec) * 1000000000L + (loop_end.tv_nsec - loop_start.tv_nsec);
+
+    // Accumulate timing data
+    total_duration_ns += loop_duration_ns;
+    iteration_count++;
+
+    // Print average every 1000 iterations
+    if (iteration_count == TIMING_WINDOW) {
+      double average_duration_ns = (double)total_duration_ns / TIMING_WINDOW;
+      double average_duration_ms = average_duration_ns / 1000000.0;
+      printf("RU loop average over %d iterations: %.3f ms\n", TIMING_WINDOW, average_duration_ms);
+      fflush(stdout);
+
+      // Reset counters for next window
+      total_duration_ns = 0;
+      iteration_count = 0;
+    }
+    #endif
+
   }
 
   ru_thread_status = 0;
@@ -1482,7 +1548,7 @@ void set_function_spec_param(RU_t *ru)
         ru->do_prach             = 0;                       // no prach processing in RU
         ru->feprx                = nr_fep_tp;     // this is frequency-shift + DFTs
         ru->feptx_ofdm           = nr_feptx_tp;             // this is fep with idft and precoding
-        ru->feptx_prec           = NULL;                    
+        ru->feptx_prec           = NULL;
         ru->fh_north_in          = NULL;                    // no incoming fronthaul from north
         ru->fh_north_out         = NULL;                    // no outgoing fronthaul to north
         ru->nr_start_if          = NULL;                    // no if interface

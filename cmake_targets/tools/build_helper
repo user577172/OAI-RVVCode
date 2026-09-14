@@ -103,6 +103,7 @@ get_distribution_release() {
 check_supported_distribution() {
     local distribution=$(get_distribution_release)
     case "$distribution" in
+        "ubuntu26.04") return 0 ;;
         "ubuntu24.04") return 0 ;;
         "ubuntu22.04") return 0 ;;
         "ubuntu20.04") return 0 ;;
@@ -575,7 +576,12 @@ install_asn1c_from_source(){
     # Showing which version is used
     git log -n1
     autoreconf -iv
-    ./configure --prefix /opt/asn1c/
+    if [[ "$(uname -m)" == "riscv64" ]]; then
+        # asn1c 0.9.29 triggers invalid pointer accesses when optimized on RV64.
+        CFLAGS="-O0 -g3" CXXFLAGS="-O0 -g3" ./configure --prefix /opt/asn1c/
+    else
+        ./configure --prefix /opt/asn1c/
+    fi
     make -j`nproc`
     $SUDO make install
     cd -
@@ -587,9 +593,27 @@ install_asn1c_from_source(){
 
 install_simde_from_source(){
     echo_info "\nInstalling SIMDE from source without test cases (header files only)"
+    if [[ -f /usr/include/simde/simde-common.h ]]; then
+      echo_info "SIMDE headers already installed; skipping download"
+      return 0
+    fi
     cd /tmp
     $SUDO rm -rf /tmp/simde
-    git clone https://github.com/simd-everywhere/simde-no-tests.git /tmp/simde
+    for attempt in 1 2 3; do
+      git -c http.version=HTTP/1.1 clone https://github.com/simd-everywhere/simde-no-tests.git /tmp/simde && break
+      echo_warning "SIMDE download failed (attempt ${attempt}/3)"
+      $SUDO rm -rf /tmp/simde
+    done
+    if [[ ! -d /tmp/simde/.git ]]; then
+      if [[ "$OS_DISTRO" == "ubuntu" ]]; then
+        echo_warning "GitHub unavailable; falling back to Ubuntu libsimde-dev"
+        $SUDO apt-get update
+        $SUDO apt-get install -y libsimde-dev
+        return $?
+      fi
+      echo_error "Unable to install SIMDE headers"
+      return 1
+    fi
     cd /tmp/simde
     # we can specify a given version of SIMDE (sha-one or tag)
     if [[ -v SIMDE_VERSION ]]; then

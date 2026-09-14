@@ -43,7 +43,7 @@ extern "C" {
 
 #if defined(__i386__) || defined(__x86_64__)
 #define LEVEL1_DCACHE_LINESIZE 64
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(__riscv)
 // This is not always true for ARM
 // in linux, you can obtain the size at runtime using sysconf (_SC_LEVEL1_DCACHE_LINESIZE)
 // or from the bash with the command $ getconf LEVEL1_DCACHE_LINESIZE

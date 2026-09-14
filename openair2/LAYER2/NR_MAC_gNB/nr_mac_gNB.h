@@ -493,6 +493,23 @@ typedef struct NR_bler_stats {
   uint64_t rounds[8];
 } NR_bler_stats_t;
 
+#define MAX_MCS_HISTORY 64
+
+typedef struct {
+  uint8_t mcs;
+  uint8_t success;
+  uint32_t timestamp;
+  uint32_t tb_size;
+  float spectral_efficiency;
+} NR_mcs_history_entry_t;
+
+typedef struct {
+  NR_mcs_history_entry_t entries[MAX_MCS_HISTORY];
+  int head;
+  int tail;
+  int count;
+} NR_mcs_history_t;
+
 //
 /*! As per spec 38.214 section 5.2.1.4.2
  * - if the UE is configured with the higher layer parameter groupBasedBeamReporting set to 'disabled', the UE shall report in
@@ -671,6 +688,9 @@ typedef struct {
   // pdcch closed loop adjust for PDCCH aggregation level, range <0, 1>
   // 0 - good channel, 1 - bad channel
   float pdcch_cl_adjust;
+
+  /// MCS transmission history for link adaptation plugins (HARQ feedback)
+  NR_mcs_history_t mcs_history;
 } NR_UE_sched_ctrl_t;
 
 typedef struct NR_mac_dir_stats {

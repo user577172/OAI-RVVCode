@@ -234,6 +234,14 @@ static size_t dump_L1_meas_stats(PHY_VARS_gNB *gNB, RU_t *ru, char *output, size
   output += print_meas_log(&gNB->ts_deinterleave, "UL segment deinterleaving", NULL, NULL, output, end - output);
   output += print_meas_log(&gNB->ts_rate_unmatch, "UL segment rate recovery", NULL, NULL, output, end - output);
   output += print_meas_log(&gNB->ts_ldpc_decode, "UL segments decoding", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->ulsch_decoding_stats, "ULSCH decoding total", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->ulsch_channel_estimation_stats, "PUSCH channel estimation", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->ulsch_channel_measurement_stats, "PUSCH channel measurement", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->rx_pusch_init_stats, "PUSCH initialization", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->rx_pusch_symbol_processing_stats, "PUSCH symbol processing", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->ulsch_resource_extraction_stats, "PUSCH resource extraction", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->ulsch_channel_compensation_stats, "PUSCH channel compensation", NULL, NULL, output, end - output);
+  output += print_meas_log(&gNB->ulsch_llr_stats, "PUSCH LLR computation", NULL, NULL, output, end - output);
   output += print_meas_log(&gNB->ul_indication_stats, "UL Indication", NULL, NULL, output, end - output);
   output += print_meas_log(&gNB->slot_indication_stats, "Slot Indication", NULL, NULL, output, end - output);
   output += print_meas_log(&gNB->rx_pusch_stats, "PUSCH inner-receiver", NULL, NULL, output, end - output);
@@ -294,6 +302,14 @@ void *nrL1_stats_thread(void *param) {
   reset_meas(&gNB->ts_deinterleave);
   reset_meas(&gNB->ts_rate_unmatch);
   reset_meas(&gNB->ts_ldpc_decode);
+  reset_meas(&gNB->ulsch_decoding_stats);
+  reset_meas(&gNB->ulsch_channel_estimation_stats);
+  reset_meas(&gNB->ulsch_channel_measurement_stats);
+  reset_meas(&gNB->rx_pusch_init_stats);
+  reset_meas(&gNB->rx_pusch_symbol_processing_stats);
+  reset_meas(&gNB->ulsch_resource_extraction_stats);
+  reset_meas(&gNB->ulsch_channel_compensation_stats);
+  reset_meas(&gNB->ulsch_llr_stats);
   reset_meas(&gNB->ul_indication_stats);
   reset_meas(&gNB->slot_indication_stats);
   reset_meas(&gNB->rx_pusch_stats);
@@ -327,7 +343,8 @@ void init_gNB_Tpool(int inst)
   gNB = RC.gNB[inst];
   gNB_L1_proc_t *proc = &gNB->proc;
   // PUSCH symbols per thread need to be calculated by how many threads we have
-  gNB->num_pusch_symbols_per_thread = 1;
+  if (gNB->num_pusch_symbols_per_thread == 0)
+    gNB->num_pusch_symbols_per_thread = 1;
   // ULSCH decoding threadpool
   initTpool(get_softmodem_params()->threadPoolConfig, &gNB->threadPool, cpumeas(CPUMEAS_GETSTATE));
   // ULSCH decoder result FIFO

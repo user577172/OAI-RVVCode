@@ -55,6 +55,7 @@ typedef struct nrLDPC_segment_decoding_parameters_s{
   bool *d_to_be_cleared;
   uint8_t *c;
   bool decodeSuccess;
+  uint8_t decodeIterations;
   time_stats_t ts_deinterleave;
   time_stats_t ts_rate_unmatch;
   time_stats_t ts_ldpc_decode;
@@ -233,6 +234,7 @@ typedef struct nrLDPC_slot_encoding_parameters_s{
 } nrLDPC_slot_encoding_parameters_t;
 
 typedef int32_t(nrLDPC_coding_init_t)(void);
+typedef int32_t(nrLDPC_coding_threadinit_t)(void);
 typedef int32_t(nrLDPC_coding_shutdown_t)(void);
 
 /**
@@ -249,6 +251,7 @@ typedef int32_t(nrLDPC_coding_encoder_t)(nrLDPC_slot_encoding_parameters_t *nrLD
 
 typedef struct nrLDPC_coding_interface_s {
   nrLDPC_coding_init_t *nrLDPC_coding_init;
+  nrLDPC_coding_threadinit_t *nrLDPC_coding_threadinit;
   nrLDPC_coding_shutdown_t *nrLDPC_coding_shutdown;
   nrLDPC_coding_decoder_t *nrLDPC_coding_decoder;
   nrLDPC_coding_encoder_t *nrLDPC_coding_encoder;

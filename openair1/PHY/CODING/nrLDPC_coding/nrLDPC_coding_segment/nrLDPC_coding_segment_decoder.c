@@ -112,6 +112,7 @@ typedef struct nrLDPC_decoding_parameters_s {
   bool *d_to_be_cleared;
   uint8_t *c;
   bool *decodeSuccess;
+  uint8_t *decodeIterations;
 
   task_ans_t *ans;
 
@@ -216,6 +217,7 @@ static void nr_process_decode_segment(void *arg)
 
   ////////////////////////////////// pl =====> llrProcBuf //////////////////////////////////
   int decodeIterations = LDPCdecoder(p_decoderParms, l, llrProcBuf, p_procTime, rdata->abort_decode);
+  *rdata->decodeIterations = decodeIterations;
 
   if (decodeIterations < p_decoderParms->numMaxIter) {
     memcpy(rdata->c, llrProcBuf, K >> 3);
@@ -267,6 +269,7 @@ int nrLDPC_prepare_TB_decoding(nrLDPC_slot_decoding_parameters_t *nrLDPC_slot_de
     rdata->d_to_be_cleared = nrLDPC_TB_decoding_parameters->segments[r].d_to_be_cleared;
     rdata->c = nrLDPC_TB_decoding_parameters->segments[r].c;
     rdata->decodeSuccess = &nrLDPC_TB_decoding_parameters->segments[r].decodeSuccess;
+    rdata->decodeIterations = &nrLDPC_TB_decoding_parameters->segments[r].decodeIterations;
     rdata->p_ts_deinterleave = &nrLDPC_TB_decoding_parameters->segments[r].ts_deinterleave;
     rdata->p_ts_rate_unmatch = &nrLDPC_TB_decoding_parameters->segments[r].ts_rate_unmatch;
     rdata->p_ts_ldpc_decode = &nrLDPC_TB_decoding_parameters->segments[r].ts_ldpc_decode;
@@ -279,18 +282,46 @@ int nrLDPC_prepare_TB_decoding(nrLDPC_slot_decoding_parameters_t *nrLDPC_slot_de
   return nrLDPC_TB_decoding_parameters->C;
 }
 
-int32_t nrLDPC_coding_init(void)
-{
-  return 0;
-}
+#define VISUALIZE_STATS
 
-int32_t nrLDPC_coding_shutdown(void)
-{
-  return 0;
+#ifdef VISUALIZE_STATS
+#include <unistd.h>
+#include <pthread.h>
+#include <time.h>
+
+#define TIMESTAMP_CLOCK_SOURCE CLOCK_MONOTONIC
+
+#ifndef LDPC_DECODER_NAME
+#define LDPC_DECODER_NAME "LDPC decoder"
+#endif
+
+static frame_t shared_log_frame;
+
+struct TimeMeasurements {
+    unsigned long long avg_ns;
+    unsigned long long max_ns;
+    size_t count;
+};
+static __thread struct TimeMeasurements decode_time = {};
+static __thread struct TimeMeasurements decode_per_segment_time = {};
+
+static unsigned add_measurement(struct TimeMeasurements* time, unsigned long long time_ns, size_t max_samples) {
+    if (++time->count > max_samples)
+        time->count = max_samples;
+    time->avg_ns = (unsigned long long)((long long)time->avg_ns + (long long)(time_ns - time->avg_ns) / (int) time->count);
+    if (time_ns > time->max_ns)
+        time->max_ns = time_ns;
+    return time->count;
 }
+#endif
 
 int32_t nrLDPC_coding_decoder(nrLDPC_slot_decoding_parameters_t *nrLDPC_slot_decoding_parameters)
 {
+#ifdef VISUALIZE_STATS
+  struct timespec ts_begin, ts_end;
+  clock_gettime( TIMESTAMP_CLOCK_SOURCE, &ts_begin );
+#endif
+
   int nbSegments = 0;
   for (int pusch_id = 0; pusch_id < nrLDPC_slot_decoding_parameters->nb_TBs; pusch_id++) {
     nrLDPC_TB_decoding_parameters_t *nrLDPC_TB_decoding_parameters = &nrLDPC_slot_decoding_parameters->TBs[pusch_id];
@@ -307,6 +338,21 @@ int32_t nrLDPC_coding_decoder(nrLDPC_slot_decoding_parameters_t *nrLDPC_slot_dec
 
   // Execute thread pool tasks
   join_task_ans(t_info.ans);
+
+#ifdef VISUALIZE_STATS
+  clock_gettime( TIMESTAMP_CLOCK_SOURCE, &ts_end );
+  unsigned long long time_ns = ts_end.tv_nsec - ts_begin.tv_nsec + 1000000000ll * (ts_end.tv_sec - ts_begin.tv_sec);
+  (void) add_measurement(&decode_time, time_ns, 500);
+  (void) add_measurement(&decode_per_segment_time, time_ns / nbSegments, 500);
+  // stats
+  frame_t prev_frame = *(frame_t volatile*) &shared_log_frame; // may be changed concurrently, re-checked with atomic below
+  frame_t frame = nrLDPC_slot_decoding_parameters->frame;
+  if (/*(slot == 0) &&*/ (frame & 127) == 0 && (prev_frame != frame)) {
+    if (__atomic_compare_exchange(&shared_log_frame, &prev_frame, &frame, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      LOG_I(NR_PHY, LDPC_DECODER_NAME ": %9.2f us (%9.2f us / seg)\n\n", decode_time.avg_ns / 1000.0, decode_per_segment_time.avg_ns / 1000.0);
+    }
+  }
+#endif
 
   for (int pusch_id = 0; pusch_id < nrLDPC_slot_decoding_parameters->nb_TBs; pusch_id++) {
     nrLDPC_TB_decoding_parameters_t *nrLDPC_TB_decoding_parameters = &nrLDPC_slot_decoding_parameters->TBs[pusch_id];

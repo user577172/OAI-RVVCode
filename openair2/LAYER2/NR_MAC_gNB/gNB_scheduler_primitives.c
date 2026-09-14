@@ -765,6 +765,8 @@ NR_pusch_dmrs_t get_ul_dmrs_params(const NR_ServingCellConfigCommon_t *scc,
   return dmrs;
 }
 
+#include "plugins/common/src/mac_plugins.h"
+
 #define BLER_UPDATE_FRAME 10
 #define BLER_FILTER 0.9f
 int get_mcs_from_bler(const NR_bler_options_t *bler_options,
@@ -773,6 +775,28 @@ int get_mcs_from_bler(const NR_bler_options_t *bler_options,
                       int max_mcs,
                       frame_t frame)
 {
+  // Dispatch to the LA plugin for DL calls only.
+  //
+  // Both the DL and UL paths call this function, with:
+  //   DL: bler_stats == &sched_ctrl->dl_bler_stats, stats == &UE->mac_stats.dl
+  //   UL: bler_stats == &sched_ctrl->ul_bler_stats, stats == &UE->mac_stats.ul
+  //
+  // dl_bler_stats and ul_bler_stats sit at different offsets in
+  // NR_UE_sched_ctrl_t, and mac_stats.dl / mac_stats.ul sit at different
+  // offsets in NR_mac_stats_t. We can therefore recover two candidate UE
+  // pointers (one assuming DL, one assuming UL) from stats and bler_stats,
+  // and the pair that is mutually consistent tells us which path we are on.
+  if (link_adaptation_interface.get_mcs_from_bler) {
+    const char *ue_dl_from_stats = (const char *)stats
+        - offsetof(NR_mac_stats_t, dl)
+        - offsetof(NR_UE_info_t, mac_stats);
+    const char *ue_dl_from_bler = (const char *)bler_stats
+        - offsetof(NR_UE_sched_ctrl_t, dl_bler_stats)
+        - offsetof(NR_UE_info_t, UE_sched_ctrl);
+    if (ue_dl_from_stats == ue_dl_from_bler)
+      return link_adaptation_interface.get_mcs_from_bler(bler_options, stats, bler_stats, max_mcs, frame);
+  }
+
   int diff = frame - bler_stats->last_frame;
   if (diff < 0) // wrap around
     diff += 1024;

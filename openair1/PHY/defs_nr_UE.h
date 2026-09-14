@@ -52,8 +52,8 @@
 #include "common_lib.h"
 #include "fapi_nr_ue_interface.h"
 #include "assertions.h"
-#include "barrier.h"
-#include "actor.h"
+#include "barrier/barrier.h"
+#include "actor/actor.h"
 //#include "openair1/SCHED_NR_UE/defs.h"
 
 #if ENABLE_RAL

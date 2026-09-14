@@ -164,6 +164,11 @@ int32_t LDPCinit()
   return 0;
 }
 
+int32_t LDPCthreadinit()
+{
+  return 0;
+}
+
 int32_t LDPCshutdown()
 {
   return 0;

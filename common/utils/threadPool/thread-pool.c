@@ -55,6 +55,34 @@ void pushTpool(tpool_t* tpool, task_t task)
   push_not_q(&q_arr[index % len_thr], task);
 }
 
+// extern
+void (*initThreadHook)() = NULL;
+void (*exitThreadHook)() = NULL;
+
+static void initThreadTaskFunc(void* args) {
+  void (*cur_initThreadHook)() = (void(*)()) args;
+  if (cur_initThreadHook)
+    cur_initThreadHook();
+}
+
+void threadinitTpool(tpool_t* tpool) {
+  void (*cur_initThreadHook)();
+  __atomic_load(&initThreadHook, &cur_initThreadHook, __ATOMIC_ACQUIRE);
+  if (!cur_initThreadHook)
+    return;
+
+  task_t task = { };
+  task.func = &initThreadTaskFunc;
+  task.args = (void*) cur_initThreadHook;
+
+  size_t const len_thr = tpool->len_thr;
+  not_q_t* q_arr = (not_q_t*)tpool->q_arr;
+
+  for (size_t i = 0; i < len_thr; ++i) {
+    push_not_q(&q_arr[i], task);
+  }
+}
+
 static void* worker_thread(void* arg)
 {
   DevAssert(arg != NULL);
@@ -69,6 +97,12 @@ static void* worker_thread(void* arg)
   not_q_t* q_arr = (not_q_t*)tpool->q_arr;
 
   init_not_q(&q_arr[idx], idx);
+
+  void (*ran_initThreadHook)();
+  __atomic_load(&initThreadHook, &ran_initThreadHook, __ATOMIC_ACQUIRE);
+  if (ran_initThreadHook)
+    ran_initThreadHook();
+
   // Synchronize all threads
   pthread_barrier_wait(&tpool->barrier);
 
@@ -90,8 +124,21 @@ static void* worker_thread(void* arg)
       pushTpool(tpool, (task_t){.args = NULL, .func = NULL});
       break;
     }
+
+    if (ret.t.func == initThreadTaskFunc && ret.t.args) {
+      if (ret.t.args == (void*) ran_initThreadHook)
+        continue;
+      else
+        ran_initThreadHook = (void(*)()) ret.t.args;
+    }
+
     ret.t.func(ret.t.args);
   }
+
+  void (*cur_exitThreadHook)();
+  __atomic_load(&exitThreadHook, &cur_exitThreadHook, __ATOMIC_ACQUIRE);
+  if (cur_exitThreadHook)
+    cur_exitThreadHook();
 
   free(args);
   return NULL;

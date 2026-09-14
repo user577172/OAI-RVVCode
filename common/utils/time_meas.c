@@ -29,7 +29,7 @@
 #include "common/config/config_userapi.h"
 #include "common/utils/threadPool/notified_fifo.h"
 // global var for openair performance profiler
-int cpu_meas_enabled = 0;
+int cpu_meas_enabled = 1;
 double cpu_freq_GHz  __attribute__ ((aligned(32)));
 
 double cpu_freq_GHz  __attribute__ ((aligned(32)))=0.0;

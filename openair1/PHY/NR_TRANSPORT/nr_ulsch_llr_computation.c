@@ -33,12 +33,13 @@
 #include "PHY/defs_gNB.h"
 #include "PHY/sse_intrin.h"
 #include "nr_phy_common.h"
+#include "plugins/neural_demapper/src/nr_demapper_extern.h"
 
 #ifdef __aarch64__
 #define USE_128BIT
 #endif
 
-void nr_ulsch_compute_llr(int32_t *rxdataF_comp,
+void nr_ulsch_compute_llr_default(int32_t *rxdataF_comp,
                           c16_t *ul_ch_mag,
                           c16_t *ul_ch_magb,
                           c16_t *ul_ch_magc,
@@ -65,6 +66,38 @@ void nr_ulsch_compute_llr(int32_t *rxdataF_comp,
       break;
   }
 }
+
+// START marker-compute-llr-start
+void nr_ulsch_compute_llr(int32_t *rxdataF_comp,
+                          c16_t *ul_ch_mag,
+                          c16_t *ul_ch_magb,
+                          c16_t *ul_ch_magc,
+                          int16_t *ulsch_llr,
+                          uint32_t nb_re,
+                          uint8_t symbol,
+                          uint8_t mod_order)
+{
+    int handled = 0;
+    if (demapper_interface.compute_llr)
+        handled = demapper_interface.compute_llr(rxdataF_comp,
+                                                 ul_ch_mag,
+                                                 ul_ch_magb,
+                                                 ul_ch_magc,
+                                                 ulsch_llr,
+                                                 nb_re,
+                                                 symbol,
+                                                 mod_order);
+    if (!handled)
+      nr_ulsch_compute_llr_default(rxdataF_comp,
+                                   ul_ch_mag,
+                                   ul_ch_magb,
+                                   ul_ch_magc,
+                                   ulsch_llr,
+                                   nb_re,
+                                   symbol,
+                                   mod_order);
+}
+// END marker-compute-llr-end
 
 /*
  * This function computes the LLRs of stream 0 (s_0) in presence of the interfering stream 1 (s_1) assuming that both symbols are
@@ -394,14 +427,14 @@ void nr_ulsch_qpsk_qpsk(c16_t *stream0_in, c16_t *stream1_in, int16_t *stream0_o
 // calculate interference magnitude
 // tmp_result = ones in shorts corr. to interval 2<=x<=4, tmp_result2 interval < 2, tmp_result3 interval 4<x<6 and tmp_result4
 // interval x>6
-static inline simde__m128i interference_abs_64qam_epi16(simde__m128i psi, 
-                                                        simde__m128i int_ch_mag, 
-                                                        simde__m128i int_two_ch_mag, 
-                                                        simde__m128i int_three_ch_mag, 
-                                                        simde__m128i c1, 
-                                                        simde__m128i c3, 
-                                                        simde__m128i c5, 
-                                                        simde__m128i c7) 
+static inline simde__m128i interference_abs_64qam_epi16(simde__m128i psi,
+                                                        simde__m128i int_ch_mag,
+                                                        simde__m128i int_two_ch_mag,
+                                                        simde__m128i int_three_ch_mag,
+                                                        simde__m128i c1,
+                                                        simde__m128i c3,
+                                                        simde__m128i c5,
+                                                        simde__m128i c7)
 {
   simde__m128i tmp_result  = simde_mm_cmpgt_epi16(int_two_ch_mag, psi);
   simde__m128i tmp_result3 = simde_mm_xor_si128(tmp_result, allones128());
@@ -490,13 +523,13 @@ static inline simde__m128i max_epi16(simde__m128i m0, simde__m128i m1, simde__m1
 // calculate interference magnitude
 // tmp_result = ones in shorts corr. to interval 2<=x<=4, tmp_result2 interval < 2, tmp_result3 interval 4<x<6 and tmp_result4
 // interval x>6
-static inline simde__m256i interference_abs_64qam_epi16_256(simde__m256i psi, 
-                                                            simde__m256i int_ch_mag, 
-                                                            simde__m256i int_two_ch_mag, 
-                                                            simde__m256i int_three_ch_mag, 
-                                                            simde__m256i c1, 
-                                                            simde__m256i c3, 
-                                                            simde__m256i c5, 
+static inline simde__m256i interference_abs_64qam_epi16_256(simde__m256i psi,
+                                                            simde__m256i int_ch_mag,
+                                                            simde__m256i int_two_ch_mag,
+                                                            simde__m256i int_three_ch_mag,
+                                                            simde__m256i c1,
+                                                            simde__m256i c3,
+                                                            simde__m256i c5,
                                                             simde__m256i c7)
 {
   simde__m256i tmp_result = simde_mm256_cmpgt_epi16(int_two_ch_mag, psi);
@@ -1259,7 +1292,7 @@ void nr_ulsch_qam64_qam64(c16_t *stream0_in,
       // Detection of interference term
       a_r_s[j] = interference_abs_64qam_epi16(psi_r_s[j], ch_mag_int_with_sigma2, two_ch_mag_int_with_sigma2, three_ch_mag_int_with_sigma2, ONE_OVER_SQRT_2_42, THREE_OVER_SQRT_2_42, FIVE_OVER_SQRT_2_42, SEVEN_OVER_SQRT_2_42);
       a_i_s[j] = interference_abs_64qam_epi16(psi_i_s[j], ch_mag_int_with_sigma2, two_ch_mag_int_with_sigma2, three_ch_mag_int_with_sigma2, ONE_OVER_SQRT_2_42, THREE_OVER_SQRT_2_42, FIVE_OVER_SQRT_2_42, SEVEN_OVER_SQRT_2_42);
-      
+
       // Calculation of a group of two terms in the bit metric involving product of psi and interference
       psi_a_s[j] = prodsum_psi_a_epi16(psi_r_s[j], a_r_s[j], psi_i_s[j], a_i_s[j]);
 
@@ -1605,7 +1638,7 @@ void nr_ulsch_qam64_qam64(c16_t *stream0_in,
       // Detection of interference term
       a_r_s[j] = interference_abs_64qam_epi16_256(psi_r_s[j], ch_mag_int_with_sigma2, two_ch_mag_int_with_sigma2, three_ch_mag_int_with_sigma2, ONE_OVER_SQRT_2_42, THREE_OVER_SQRT_2_42, FIVE_OVER_SQRT_2_42, SEVEN_OVER_SQRT_2_42);
       a_i_s[j] = interference_abs_64qam_epi16_256(psi_i_s[j], ch_mag_int_with_sigma2, two_ch_mag_int_with_sigma2, three_ch_mag_int_with_sigma2, ONE_OVER_SQRT_2_42, THREE_OVER_SQRT_2_42, FIVE_OVER_SQRT_2_42, SEVEN_OVER_SQRT_2_42);
-      
+
       // Calculation of a group of two terms in the bit metric involving product of psi and interference
       psi_a_s[j] = prodsum_psi_a_epi16_256(psi_r_s[j], a_r_s[j], psi_i_s[j], a_i_s[j]);
 

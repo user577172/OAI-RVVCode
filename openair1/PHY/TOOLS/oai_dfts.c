@@ -19,7 +19,7 @@
  *      contact@openairinterface.org
  */
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(__riscv)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

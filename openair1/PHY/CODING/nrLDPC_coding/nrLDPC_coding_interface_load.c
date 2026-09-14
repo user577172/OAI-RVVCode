@@ -49,6 +49,7 @@ int load_nrLDPC_coding_interface(char *version, nrLDPC_coding_interface_t *itf)
   }
   /* function description array, to be used when loading the encoding/decoding shared lib */
   loader_shlibfunc_t shlib_fdesc[] = {{.fname = "nrLDPC_coding_init"},
+                                      {.fname = "nrLDPC_coding_threadinit"},
                                       {.fname = "nrLDPC_coding_shutdown"},
                                       {.fname = "nrLDPC_coding_decoder"},
                                       {.fname = "nrLDPC_coding_encoder"}};
@@ -59,9 +60,10 @@ int load_nrLDPC_coding_interface(char *version, nrLDPC_coding_interface_t *itf)
     return ret;
   }
   itf->nrLDPC_coding_init = (nrLDPC_coding_init_t *)shlib_fdesc[0].fptr;
-  itf->nrLDPC_coding_shutdown = (nrLDPC_coding_shutdown_t *)shlib_fdesc[1].fptr;
-  itf->nrLDPC_coding_decoder = (nrLDPC_coding_decoder_t *)shlib_fdesc[2].fptr;
-  itf->nrLDPC_coding_encoder = (nrLDPC_coding_encoder_t *)shlib_fdesc[3].fptr;
+  itf->nrLDPC_coding_threadinit = (nrLDPC_coding_threadinit_t *)shlib_fdesc[1].fptr;
+  itf->nrLDPC_coding_shutdown = (nrLDPC_coding_shutdown_t *)shlib_fdesc[2].fptr;
+  itf->nrLDPC_coding_decoder = (nrLDPC_coding_decoder_t *)shlib_fdesc[3].fptr;
+  itf->nrLDPC_coding_encoder = (nrLDPC_coding_encoder_t *)shlib_fdesc[4].fptr;
 
   AssertFatal(itf->nrLDPC_coding_init() == 0, "error starting LDPC library %s %s\n", libname, version);
 

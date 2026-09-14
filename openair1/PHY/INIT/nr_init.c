@@ -43,6 +43,8 @@
 #include "PHY/NR_REFSIG/ul_ref_seq_nr.h"
 #include <string.h>
 #include "nfapi/open-nFAPI/fapi/inc/nr_fapi_p5_utils.h"
+#include "plugins/common/src/plugins.h"
+
 
 int l1_north_init_gNB()
 {
@@ -99,6 +101,22 @@ void reset_active_stats(PHY_VARS_gNB *gNB, int frame)
   }
 }
 
+extern void (*initThreadHook)();
+static void (*prev_initThreadHook)() = NULL;
+
+void worker_thread_init() {
+    if (prev_initThreadHook)
+        prev_initThreadHook();
+
+    for (int inst = 0; inst < RC.nb_nr_L1_inst; inst++) {
+        PHY_VARS_gNB *gNB = RC.gNB[inst];
+        if (gNB->nrLDPC_coding_interface.nrLDPC_coding_threadinit)
+            gNB->nrLDPC_coding_interface.nrLDPC_coding_threadinit();
+    }
+
+    worker_thread_plugin_init();
+}
+
 void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
 {
   // shortcuts
@@ -137,6 +155,12 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
 
   int ret_loader = load_nrLDPC_coding_interface(NULL, &gNB->nrLDPC_coding_interface);
   AssertFatal(ret_loader == 0, "error loading LDPC library\n");
+
+  // now everyting is initialized for worker thread modules
+  if (initThreadHook != &worker_thread_init) {
+      prev_initThreadHook = initThreadHook;
+      initThreadHook = &worker_thread_init;
+  }
 
   gNB->max_nb_pdsch = MAX_MOBILES_PER_GNB;
   init_delay_table(fp->ofdm_symbol_size, MAX_DELAY_COMP, NR_MAX_OFDM_SYMBOL_SIZE, fp->delay_table);
@@ -184,8 +208,8 @@ void phy_init_nr_gNB(PHY_VARS_gNB *gNB)
     for (int j = 0; j < Ptx; j++)
       common_vars->txdataF[i][j] = (c16_t*)malloc16_clear(fp->samples_per_frame_wCP * sizeof(c16_t));
   }
-  common_vars->debugBuff = (int32_t*)malloc16_clear(fp->samples_per_frame*sizeof(int32_t)*100);	
-  common_vars->debugBuff_sample_offset = 0; 
+  common_vars->debugBuff = (int32_t*)malloc16_clear(fp->samples_per_frame*sizeof(int32_t)*100);
+  common_vars->debugBuff_sample_offset = 0;
 
   // PRACH
   prach_vars->rxsigF = (int16_t **)malloc16_clear(Prx*sizeof(int16_t*));
@@ -286,6 +310,7 @@ void phy_free_nr_gNB(PHY_VARS_gNB *gNB)
 
   free_nrLDPC_coding_interface(&gNB->nrLDPC_coding_interface);
 
+  free_plugins();
 }
 
 //Adding nr_schedule_handler
@@ -368,7 +393,7 @@ void nr_phy_config_request(NR_PHY_Config_t *phy_config)
 
   uint64_t dl_bw_khz = (12*gNB_config->carrier_config.dl_grid_size[gNB_config->ssb_config.scs_common.value].value)*(15<<gNB_config->ssb_config.scs_common.value);
   fp->dl_CarrierFreq = ((dl_bw_khz>>1) + gNB_config->carrier_config.dl_frequency.value)*1000 ;
-  
+
   uint64_t ul_bw_khz = (12*gNB_config->carrier_config.ul_grid_size[gNB_config->ssb_config.scs_common.value].value)*(15<<gNB_config->ssb_config.scs_common.value);
   fp->ul_CarrierFreq = ((ul_bw_khz>>1) + gNB_config->carrier_config.uplink_frequency.value)*1000 ;
 
@@ -385,7 +410,7 @@ void nr_phy_config_request(NR_PHY_Config_t *phy_config)
         (unsigned long long)fp->ul_CarrierFreq);
 
   nr_init_frame_parms(gNB_config, fp);
-  
+
 
   if (RC.gNB[Mod_id]->configured == 1) {
     LOG_E(PHY,"Already gNB already configured, do nothing\n");
@@ -457,7 +482,7 @@ void init_nr_transport(PHY_VARS_gNB *gNB)
         if(cfg->tdd_table.max_tdd_periodicity_list[i].max_num_of_symbol_per_slot_list[j].slot_config.value == 1) { // UL symbol
           nb_ul_slots_period++;
           break;
-        }  
+        }
       }
     }
   }

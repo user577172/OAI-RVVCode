@@ -2,6 +2,7 @@ add_library(ldpc_segment OBJECT
   nr_rate_matching.c
   nrLDPC_coding_segment_decoder.c
   nrLDPC_coding_segment_encoder.c
+  ../nrLDPC_coding_interface.c
 )
 
 #ensure that the T header files are generated before targets depending on them

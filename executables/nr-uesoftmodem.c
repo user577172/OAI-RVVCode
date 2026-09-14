@@ -88,6 +88,7 @@ unsigned short config_frames[4] = {2,9,11,13};
 #include "nr_nas_msg.h"
 #include <openair1/PHY/MODULATION/nr_modulation.h>
 #include "openair2/GNB_APP/gnb_paramdef.h"
+#include "plugins/common/src/plugins.h"
 #include "actor.h"
 
 THREAD_STRUCT thread_struct;
@@ -377,6 +378,22 @@ int NB_UE_INST = 1;
 configmodule_interface_t *uniqCfg = NULL;
 nrLDPC_coding_interface_t nrLDPC_coding_interface = {0};
 
+void threadinitTpool(tpool_t* t);
+extern void (*initThreadHook)();
+static void (*prev_initThreadHook)() = NULL;
+
+void worker_thread_init() {
+    if (prev_initThreadHook)
+        prev_initThreadHook();
+
+    if (nrLDPC_coding_interface.nrLDPC_coding_threadinit)
+        nrLDPC_coding_interface.nrLDPC_coding_threadinit();
+
+    // todo: decided what/which plugins are linked to uesoftmodem vs. just softmodem
+    worker_thread_plugin_init();
+
+}
+
 int main(int argc, char **argv)
 {
   start_background_system();
@@ -417,6 +434,14 @@ int main(int argc, char **argv)
 
   int ret_loader = load_nrLDPC_coding_interface(NULL, &nrLDPC_coding_interface);
   AssertFatal(ret_loader == 0, "error loading LDPC library\n");
+
+  // todo: decided what/which plugins are linked to uesoftmodem vs. just softmodem
+  init_plugins(NULL);
+  printf("\nInitialized plugins\n\n");
+
+  // now everyting is initialized for worker thread modules
+  prev_initThreadHook = initThreadHook;
+  initThreadHook = &worker_thread_init;
 
   if (ouput_vcd) {
     vcd_signal_dumper_init("/tmp/openair_dump_nrUE.vcd");
@@ -566,6 +591,8 @@ int main(int argc, char **argv)
   // wait for end of program
   printf("TYPE <CTRL-C> TO TERMINATE\n");
 
+  threadinitTpool(&nrUE_params.Tpool);
+
   // Sleep a while before checking all parameters have been used
   // Some are used directly in external threads, asynchronously
   sleep(2);
@@ -607,6 +634,10 @@ int main(int argc, char **argv)
   }
 
   free_nrLDPC_coding_interface(&nrLDPC_coding_interface);
+
+  // todo: decided what/which plugins are linked to uesoftmodem vs. just softmodem
+  free_plugins();
+
 
   time_manager_finish();
 
