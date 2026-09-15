@@ -22,6 +22,12 @@ add_dependencies(tests dft_test)
 add_dependencies(dft_test dfts) # trigger build of dfts (shared lib for DFT)
 add_test(NAME dft_test COMMAND ./dft_test)
 
+add_executable(idft_test test_idft.c ../dfts_load.c)
+target_link_libraries(idft_test minimal_lib shlib_loader SIMU m)
+add_dependencies(tests idft_test)
+add_dependencies(idft_test dfts)
+add_test(NAME idft_test COMMAND ./idft_test)
+
 add_executable(test_vector_op test_vector_op.cpp)
 target_link_libraries(test_vector_op PRIVATE LOG minimal_lib)
 add_dependencies(tests test_vector_op)
