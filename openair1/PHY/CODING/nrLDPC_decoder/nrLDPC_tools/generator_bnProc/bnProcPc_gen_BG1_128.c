@@ -25,6 +25,33 @@
 #include "../../nrLDPCdecoder_defs.h"
 #include "../../nrLDPC_types.h"
 
+static void emit_bn_pc_rvv(FILE *fd, uint32_t degree, uint32_t count_factor,
+                           uint32_t data_base, uint32_t llr_base, uint32_t edge_stride)
+{
+  fprintf(fd, "  {\n    const size_t count = (((size_t) %u * Z + 15) >> 4) * 16;\n", count_factor);
+  fprintf(fd, "    for (size_t pos = 0; pos < count;) {\n");
+  fprintf(fd, "      const size_t vl = __riscv_vsetvl_e8m1(count - pos);\n");
+  if (degree == 1) {
+    fprintf(fd, "      const vint8m1_t channel = __riscv_vle8_v_i8m1(llrProcBuf + %u + pos, vl);\n", llr_base);
+    fprintf(fd, "      __riscv_vse8_v_i8m1(bnProcBufRes + %u + pos, channel, vl);\n", data_base);
+    fprintf(fd, "      const vint8m1_t check = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base);
+    fprintf(fd, "      __riscv_vse8_v_i8m1(llrRes + %u + pos, __riscv_vsadd_vv_i8m1(check, channel, vl), vl);\n", llr_base);
+  } else {
+    fprintf(fd, "      vint8m1_t x = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base);
+    fprintf(fd, "      vint16m2_t sum = __riscv_vwcvt_x_x_v_i16m2(x, vl);\n");
+    for (uint32_t edge = 1; edge < degree; ++edge) {
+      fprintf(fd, "      x = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base + edge * edge_stride);
+      fprintf(fd, "      sum = __riscv_vadd_vv_i16m2(sum, __riscv_vwcvt_x_x_v_i16m2(x, vl), vl);\n");
+    }
+    fprintf(fd, "      x = __riscv_vle8_v_i8m1(llrProcBuf + %u + pos, vl);\n", llr_base);
+    fprintf(fd, "      sum = __riscv_vadd_vv_i16m2(sum, __riscv_vwcvt_x_x_v_i16m2(x, vl), vl);\n");
+    fprintf(fd, "      sum = __riscv_vmax_vx_i16m2(sum, -128, vl);\n");
+    fprintf(fd, "      sum = __riscv_vmin_vx_i16m2(sum, 127, vl);\n");
+    fprintf(fd, "      __riscv_vse8_v_i8m1(llrRes + %u + pos, __riscv_vncvt_x_x_w_i8m1(sum, vl), vl);\n", llr_base);
+  }
+  fprintf(fd, "      pos += vl;\n    }\n  }\n");
+}
+
 
 void nrLDPC_bnProcPc_BG1_generator_128(const char *dir, int R)
 {
@@ -45,8 +72,10 @@ void nrLDPC_bnProcPc_BG1_generator_128(const char *dir, int R)
 
   fprintf(fd,"#include <stdint.h>\n");
   fprintf(fd,"#include \"PHY/sse_intrin.h\"\n");
+  fprintf(fd,"#if defined(__riscv_vector)\n#include <riscv_vector.h>\n#endif\n");
 
   fprintf(fd,"static inline void nrLDPC_bnProcPc_BG1_R%s_128(int8_t* bnProcBuf,int8_t* bnProcBufRes,int8_t* llrRes ,  int8_t* llrProcBuf, uint16_t Z ) {\n",ratestr[R]);
+  fprintf(fd,"#if !defined(__riscv_vector)\n");
     const uint8_t*  lut_numBnInBnGroups;
     const uint32_t* lut_startAddrBnGroups;
     const uint16_t* lut_startAddrBnGroupsLlr;
@@ -151,11 +180,20 @@ void nrLDPC_bnProcPc_BG1_generator_128(const char *dir, int R)
 
     }
 
-    fprintf(fd,"}\n");
+    fprintf(fd,"#else\n");
+    emit_bn_pc_rvv(fd, 1, lut_numBnInBnGroups[0], lut_startAddrBnGroups[0], lut_startAddrBnGroupsLlr[0], 0);
+    uint8_t rvv_idx = 0;
+    for (uint32_t cnidx = 1; cnidx < 30; ++cnidx) {
+      if (lut_numBnInBnGroups[cnidx] == 0)
+        continue;
+      ++rvv_idx;
+      const uint32_t stride = ((lut_numBnInBnGroups[cnidx] * NR_LDPC_ZMAX) >> 4) * 16u;
+      emit_bn_pc_rvv(fd, cnidx + 1, lut_numBnInBnGroups[cnidx],
+                     lut_startAddrBnGroups[rvv_idx], lut_startAddrBnGroupsLlr[rvv_idx], stride);
+    }
+    fprintf(fd,"#endif\n}\n");
     fclose(fd);
 }//end of the function  nrLDPC_bnProcPc_BG1
-
-
 
 
 

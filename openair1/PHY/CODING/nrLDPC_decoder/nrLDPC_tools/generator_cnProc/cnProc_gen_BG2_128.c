@@ -26,6 +26,27 @@
 #include "../../nrLDPC_types.h"                                                                                           
 #include "../../nrLDPC_bnProc.h"
 
+static void emit_cn_rvv(FILE *fd, uint32_t input_base, uint32_t output_base,
+                        const uint16_t *input_offsets, uint32_t input_count)
+{
+  fprintf(fd, "            {\n              const size_t count = (size_t) M * 16;\n");
+  fprintf(fd, "              for (size_t pos = 0; pos < count;) {\n");
+  fprintf(fd, "                const size_t vl = __riscv_vsetvl_e8m2(count - pos);\n");
+  fprintf(fd, "                vint8m2_t x = __riscv_vle8_v_i8m2(cnProcBuf + %u + pos, vl);\n", input_base + input_offsets[0] * 32u);
+  fprintf(fd, "                vint8m2_t sign = __riscv_vsra_vx_i8m2(x, 7, vl);\n");
+  fprintf(fd, "                vuint8m2_t mag = __riscv_vreinterpret_v_i8m2_u8m2(__riscv_vmax_vv_i8m2(x, __riscv_vneg_v_i8m2(x, vl), vl));\n");
+  for (uint32_t k = 1; k < input_count; ++k) {
+    fprintf(fd, "                x = __riscv_vle8_v_i8m2(cnProcBuf + %u + pos, vl);\n", input_base + input_offsets[k] * 32u);
+    fprintf(fd, "                sign = __riscv_vxor_vv_i8m2(sign, __riscv_vsra_vx_i8m2(x, 7, vl), vl);\n");
+    fprintf(fd, "                const vuint8m2_t next_mag_%u = __riscv_vreinterpret_v_i8m2_u8m2(__riscv_vmax_vv_i8m2(x, __riscv_vneg_v_i8m2(x, vl), vl));\n", k);
+    fprintf(fd, "                mag = __riscv_vminu_vv_u8m2(mag, next_mag_%u, vl);\n", k);
+  }
+  fprintf(fd, "                vint8m2_t value = __riscv_vreinterpret_v_u8m2_i8m2(mag);\n");
+  fprintf(fd, "                value = __riscv_vsub_vv_i8m2(__riscv_vxor_vv_i8m2(value, sign, vl), sign, vl);\n");
+  fprintf(fd, "                __riscv_vse8_v_i8m2(cnProcBufRes + %u + pos, value, vl);\n", output_base);
+  fprintf(fd, "                pos += vl;\n              }\n            }\n");
+}
+
 
 void nrLDPC_cnProc_BG2_generator_128(const char* dir, int R)
 {
@@ -46,7 +67,9 @@ void nrLDPC_cnProc_BG2_generator_128(const char* dir, int R)
 
   fprintf(fd,"#include <stdint.h>\n");
   fprintf(fd,"#include \"PHY/sse_intrin.h\"\n");
+  fprintf(fd,"#if defined(__riscv_vector)\n#include <riscv_vector.h>\n#endif\n");
   fprintf(fd,"static inline void nrLDPC_cnProc_BG2_R%s_128(int8_t* cnProcBuf, int8_t* cnProcBufRes, uint16_t Z) {\n",ratestr[R]);
+  fprintf(fd,"#if !defined(__riscv_vector)\n");
 
   const uint8_t*  lut_numCnInCnGroups;
   const uint32_t* lut_startAddrCnGroups = lut_startAddrCnGroups_BG2;
@@ -73,7 +96,7 @@ void nrLDPC_cnProc_BG2_generator_128(const char* dir, int R)
   // LUT with offsets for bits that need to be processed
   // 1. bit proc requires LLRs of 2. and 3. bit, 2.bits of 1. and 3. etc.
     // Offsets are in units of bitOffsetInGroup
-    const uint8_t lut_idxCnProcG3[3][2] = {{72,144}, {0,144}, {0,72}};
+    const uint16_t lut_idxCnProcG3[3][2] = {{72,144}, {0,144}, {0,72}};
 
 
   fprintf(fd,"                simde__m128i ymm0, min, sgn,ones,maxLLR;\n");
@@ -309,7 +332,7 @@ void nrLDPC_cnProc_BG2_generator_128(const char* dir, int R)
   // Process group with 8 BNs
   fprintf(fd,"//Process group with 8 BNs\n");
  // Offset is 2*384/32 = 24
-    const uint8_t lut_idxCnProcG8[8][7] = {{24,48,72,96,120,144,168}, {0,48,72,96,120,144,168},
+    const uint16_t lut_idxCnProcG8[8][7] = {{24,48,72,96,120,144,168}, {0,48,72,96,120,144,168},
                                            {0,24,72,96,120,144,168}, {0,24,48,96,120,144,168},
                                            {0,24,48,72,120,144,168}, {0,24,48,72,96,144,168},
                                            {0,24,48,72,96,120,168}, {0,24,48,72,96,120,144}};
@@ -371,7 +394,7 @@ void nrLDPC_cnProc_BG2_generator_128(const char* dir, int R)
   // Process group with 10 BNs
   fprintf(fd,"//Process group with 10 BNs\n");
 
-    const uint8_t lut_idxCnProcG10[10][9] = {{24,48,72,96,120,144,168,192,216}, {0,48,72,96,120,144,168,192,216},
+    const uint16_t lut_idxCnProcG10[10][9] = {{24,48,72,96,120,144,168,192,216}, {0,48,72,96,120,144,168,192,216},
                                              {0,24,72,96,120,144,168,192,216}, {0,24,48,96,120,144,168,192,216},
                                              {0,24,48,72,120,144,168,192,216}, {0,24,48,72,96,144,168,192,216},
                                              {0,24,48,72,96,120,168,192,216}, {0,24,48,72,96,120,144,192,216},
@@ -430,7 +453,25 @@ void nrLDPC_cnProc_BG2_generator_128(const char* dir, int R)
     }
 
 
-  fprintf(fd,"}\n");
+  fprintf(fd,"#else\n");
+  fprintf(fd,"  uint32_t M;\n");
+#define EMIT_BG2_RVV_GROUP(GROUP, DEGREE, LUT) do { \
+    if (lut_numCnInCnGroups[(GROUP)] > 0) { \
+      fprintf(fd, "  M = (%u*Z + 15)>>4;\n", lut_numCnInCnGroups[(GROUP)]); \
+      const uint32_t rvv_bit_offset = (lut_numCnInCnGroups_BG2_R15[(GROUP)] * NR_LDPC_ZMAX) >> 4; \
+      for (uint32_t rvv_j = 0; rvv_j < (DEGREE); ++rvv_j) \
+        emit_cn_rvv(fd, lut_startAddrCnGroups[(GROUP)], \
+                    lut_startAddrCnGroups[(GROUP)] + rvv_j * rvv_bit_offset * 16u, \
+                    (LUT)[rvv_j], (DEGREE) - 1); \
+    } \
+  } while (0)
+  EMIT_BG2_RVV_GROUP(0, 3, lut_idxCnProcG3);
+  EMIT_BG2_RVV_GROUP(1, 4, lut_idxCnProcG4);
+  EMIT_BG2_RVV_GROUP(2, 5, lut_idxCnProcG5);
+  EMIT_BG2_RVV_GROUP(3, 6, lut_idxCnProcG6);
+  EMIT_BG2_RVV_GROUP(4, 8, lut_idxCnProcG8);
+  EMIT_BG2_RVV_GROUP(5, 10, lut_idxCnProcG10);
+#undef EMIT_BG2_RVV_GROUP
+  fprintf(fd,"#endif\n}\n");
   fclose(fd);
 }//end of the function  nrLDPC_cnProc_BG2
-

@@ -25,6 +25,18 @@
 #include "../../nrLDPCdecoder_defs.h"
 #include "../../nrLDPC_types.h"
 
+static void emit_bn_sub_rvv(FILE *fd, uint32_t data_base, uint32_t llr_base)
+{
+  fprintf(fd, "            {\n              const size_t count = (size_t) M * 16;\n");
+  fprintf(fd, "              for (size_t pos = 0; pos < count;) {\n");
+  fprintf(fd, "                const size_t vl = __riscv_vsetvl_e8m1(count - pos);\n");
+  fprintf(fd, "                const vint8m1_t llr = __riscv_vle8_v_i8m1(llrRes + %u + pos, vl);\n", llr_base);
+  fprintf(fd, "                const vint8m1_t old = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base);
+  fprintf(fd, "                const vint8m1_t result = __riscv_vssub_vv_i8m1(llr, old, vl);\n");
+  fprintf(fd, "                __riscv_vse8_v_i8m1(bnProcBufRes + %u + pos, result, vl);\n", data_base);
+  fprintf(fd, "                pos += vl;\n              }\n            }\n");
+}
+
 void nrLDPC_bnProc_BG2_generator_128(const char* dir, int R)
 {
   const char* ratestr[3] = {"15", "13", "23"};
@@ -44,7 +56,9 @@ void nrLDPC_bnProc_BG2_generator_128(const char* dir, int R)
     abort();
   }
 
+  fprintf(fd, "#if defined(__riscv_vector)\n#include <riscv_vector.h>\n#endif\n");
   fprintf(fd, "static inline void nrLDPC_bnProc_BG2_R%s_128(int8_t* bnProcBuf,int8_t* bnProcBufRes,  int8_t* llrRes, uint16_t Z  ) {\n", ratestr[R]);
+  fprintf(fd, "#if !defined(__riscv_vector)\n");
   const uint8_t* lut_numBnInBnGroups;
   const uint32_t* lut_startAddrBnGroups;
   const uint16_t* lut_startAddrBnGroupsLlr;
@@ -993,6 +1007,20 @@ void nrLDPC_bnProc_BG2_generator_128(const char* dir, int R)
     }
   }
 
-  fprintf(fd, "}\n");
+  fprintf(fd, "#else\n  uint32_t M;\n");
+  uint8_t rvv_idx = 0;
+  for (uint32_t degree = 2; degree <= 30; ++degree) {
+    const uint32_t group = degree - 1;
+    if (lut_numBnInBnGroups[group] == 0)
+      continue;
+    ++rvv_idx;
+    fprintf(fd, "  M = (%u*Z + 15)>>4;\n", lut_numBnInBnGroups[group]);
+    const uint32_t rvv_cn_offset = (lut_numBnInBnGroups[group] * NR_LDPC_ZMAX) >> 4;
+    for (uint32_t edge = 0; edge < degree; ++edge)
+      emit_bn_sub_rvv(fd,
+                      lut_startAddrBnGroups[rvv_idx] + edge * rvv_cn_offset * 16u,
+                      lut_startAddrBnGroupsLlr[rvv_idx]);
+  }
+  fprintf(fd, "#endif\n}\n");
   fclose(fd);
 } // end of the function  nrLDPC_bnProc_BG2
