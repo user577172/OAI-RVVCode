@@ -30,24 +30,24 @@ static void emit_bn_pc_rvv(FILE *fd, uint32_t degree, uint32_t count_factor,
 {
   fprintf(fd, "  {\n    const size_t count = (((size_t) %u * Z + 15) >> 4) * 16;\n", count_factor);
   fprintf(fd, "    for (size_t pos = 0; pos < count;) {\n");
-  fprintf(fd, "      const size_t vl = __riscv_vsetvl_e8m1(count - pos);\n");
+  fprintf(fd, "      const size_t vl = __riscv_vsetvl_e8m2(count - pos);\n");
   if (degree == 1) {
-    fprintf(fd, "      const vint8m1_t channel = __riscv_vle8_v_i8m1(llrProcBuf + %u + pos, vl);\n", llr_base);
-    fprintf(fd, "      __riscv_vse8_v_i8m1(bnProcBufRes + %u + pos, channel, vl);\n", data_base);
-    fprintf(fd, "      const vint8m1_t check = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base);
-    fprintf(fd, "      __riscv_vse8_v_i8m1(llrRes + %u + pos, __riscv_vsadd_vv_i8m1(check, channel, vl), vl);\n", llr_base);
+    fprintf(fd, "      const vint8m2_t channel = __riscv_vle8_v_i8m2(llrProcBuf + %u + pos, vl);\n", llr_base);
+    fprintf(fd, "      __riscv_vse8_v_i8m2(bnProcBufRes + %u + pos, channel, vl);\n", data_base);
+    fprintf(fd, "      const vint8m2_t check = __riscv_vle8_v_i8m2(bnProcBuf + %u + pos, vl);\n", data_base);
+    fprintf(fd, "      __riscv_vse8_v_i8m2(llrRes + %u + pos, __riscv_vsadd_vv_i8m2(check, channel, vl), vl);\n", llr_base);
   } else {
-    fprintf(fd, "      vint8m1_t x = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base);
-    fprintf(fd, "      vint16m2_t sum = __riscv_vwcvt_x_x_v_i16m2(x, vl);\n");
+    fprintf(fd, "      vint8m2_t x = __riscv_vle8_v_i8m2(bnProcBuf + %u + pos, vl);\n", data_base);
+    fprintf(fd, "      vint16m4_t sum = __riscv_vwcvt_x_x_v_i16m4(x, vl);\n");
     for (uint32_t edge = 1; edge < degree; ++edge) {
-      fprintf(fd, "      x = __riscv_vle8_v_i8m1(bnProcBuf + %u + pos, vl);\n", data_base + edge * edge_stride);
-      fprintf(fd, "      sum = __riscv_vadd_vv_i16m2(sum, __riscv_vwcvt_x_x_v_i16m2(x, vl), vl);\n");
+      fprintf(fd, "      x = __riscv_vle8_v_i8m2(bnProcBuf + %u + pos, vl);\n", data_base + edge * edge_stride);
+      fprintf(fd, "      sum = __riscv_vadd_vv_i16m4(sum, __riscv_vwcvt_x_x_v_i16m4(x, vl), vl);\n");
     }
-    fprintf(fd, "      x = __riscv_vle8_v_i8m1(llrProcBuf + %u + pos, vl);\n", llr_base);
-    fprintf(fd, "      sum = __riscv_vadd_vv_i16m2(sum, __riscv_vwcvt_x_x_v_i16m2(x, vl), vl);\n");
-    fprintf(fd, "      sum = __riscv_vmax_vx_i16m2(sum, -128, vl);\n");
-    fprintf(fd, "      sum = __riscv_vmin_vx_i16m2(sum, 127, vl);\n");
-    fprintf(fd, "      __riscv_vse8_v_i8m1(llrRes + %u + pos, __riscv_vncvt_x_x_w_i8m1(sum, vl), vl);\n", llr_base);
+    fprintf(fd, "      x = __riscv_vle8_v_i8m2(llrProcBuf + %u + pos, vl);\n", llr_base);
+    fprintf(fd, "      sum = __riscv_vadd_vv_i16m4(sum, __riscv_vwcvt_x_x_v_i16m4(x, vl), vl);\n");
+    fprintf(fd, "      sum = __riscv_vmax_vx_i16m4(sum, -128, vl);\n");
+    fprintf(fd, "      sum = __riscv_vmin_vx_i16m4(sum, 127, vl);\n");
+    fprintf(fd, "      __riscv_vse8_v_i8m2(llrRes + %u + pos, __riscv_vncvt_x_x_w_i8m2(sum, vl), vl);\n", llr_base);
   }
   fprintf(fd, "      pos += vl;\n    }\n  }\n");
 }
@@ -196,7 +196,6 @@ void nrLDPC_bnProcPc_BG2_generator_128(const char *dir, int R)
     fprintf(fd,"#endif\n}\n");
     fclose(fd);
 }//end of the function  nrLDPC_bnProcPc_BG2
-
 
 
 

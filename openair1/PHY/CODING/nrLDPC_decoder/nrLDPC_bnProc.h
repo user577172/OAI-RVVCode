@@ -31,6 +31,13 @@
 #ifndef __NR_LDPC_BNPROC__H__
 #define __NR_LDPC_BNPROC__H__
 #include "PHY/sse_intrin.h"
+
+static inline uint8_t nrLDPC_reverse_bits_u8(uint8_t value)
+{
+  value = (uint8_t)(((value & UINT8_C(0x55)) << 1) | ((value >> 1) & UINT8_C(0x55)));
+  value = (uint8_t)(((value & UINT8_C(0x33)) << 2) | ((value >> 2) & UINT8_C(0x33)));
+  return (uint8_t)((value << 4) | (value >> 4));
+}
 /**
    \brief Performs first part of BN processing on the BN processing buffer and stores the results in the LLR results buffer.
           At every BN, the sum of the returned LLRs from the connected CNs and the LLR of the receiver input is computed.
@@ -1352,6 +1359,32 @@ static inline void nrLDPC_llr2bit(int8_t* out, int8_t* llrOut, uint16_t numLLR)
 */
 static inline void nrLDPC_llr2bitPacked(int8_t* out, int8_t* llrOut, uint16_t numLLR)
 {
+#if defined(__riscv_vector)
+    uint8_t *packed = (uint8_t *)out;
+    size_t input_pos = 0;
+    size_t output_pos = 0;
+    while (input_pos < numLLR) {
+      const size_t vl = __riscv_vsetvl_e8m8(numLLR - input_pos);
+      const vint8m8_t values = __riscv_vle8_v_i8m8(llrOut + input_pos, vl);
+      const vbool1_t negative = __riscv_vmslt_vx_i8m8_b1(values, 0, vl);
+      __riscv_vsm_v_b1(packed + output_pos, negative, vl);
+      input_pos += vl;
+      output_pos += (vl + 7) >> 3;
+    }
+
+    size_t byte = 0;
+    for (; byte + 8 <= output_pos; byte += 8) {
+      uint64_t bits;
+      __builtin_memcpy(&bits, packed + byte, sizeof(bits));
+      bits = ((bits >> 1) & UINT64_C(0x5555555555555555)) | ((bits & UINT64_C(0x5555555555555555)) << 1);
+      bits = ((bits >> 2) & UINT64_C(0x3333333333333333)) | ((bits & UINT64_C(0x3333333333333333)) << 2);
+      bits = ((bits >> 4) & UINT64_C(0x0f0f0f0f0f0f0f0f)) | ((bits & UINT64_C(0x0f0f0f0f0f0f0f0f)) << 4);
+      __builtin_memcpy(packed + byte, &bits, sizeof(bits));
+    }
+    for (; byte < output_pos; ++byte)
+      packed[byte] = nrLDPC_reverse_bits_u8(packed[byte]);
+    return;
+#endif
     /** Vector of indices for shuffling input */
     const uint8_t constShuffle_256_epi8[32] __attribute__ ((aligned(32))) = {7,6,5,4,3,2,1,0,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,15,14,13,12,11,10,9,8};
     const simde__m256i* p_shuffle = (simde__m256i*) constShuffle_256_epi8;

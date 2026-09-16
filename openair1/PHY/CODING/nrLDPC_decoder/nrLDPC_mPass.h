@@ -29,6 +29,9 @@
 #include <string.h>
 #include "common/utils/utils.h"
 #include "nrLDPCdecoder_defs.h"
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+#endif
 //#include <omp.h>
 /**
    \brief Circular memcpy1
@@ -46,6 +49,11 @@
 #define arrPos(a, b) a.d + b* a.dim2
 static inline void *nrLDPC_inv_circ_memcpy(int8_t *str1, const int8_t *str2, uint16_t Z, uint16_t cshift)
 {
+    if (__builtin_expect(cshift == 0, 0)) {
+        memcpy(str1, str2, Z);
+        return str1;
+    }
+
     uint16_t rem = Z - cshift;
     memcpy(str1+cshift, str2    , rem);
     memcpy(str1       , str2+rem, cshift);
@@ -66,12 +74,112 @@ static inline void *nrLDPC_inv_circ_memcpy(int8_t *str1, const int8_t *str2, uin
 */
 static inline void *nrLDPC_circ_memcpy(int8_t *str1, const int8_t *str2, uint16_t Z, uint16_t cshift)
 {
+    if (__builtin_expect(cshift == 0, 0)) {
+        memcpy(str1, str2, Z);
+        return str1;
+    }
+
     uint16_t rem = Z - cshift;
     memcpy(str1     , str2+cshift, rem);
     memcpy(str1+rem , str2       , cshift);
 
     return(str1);
 }
+
+#if defined(__riscv_vector)
+static inline void nrLDPC_bn_sub_circ_rvv(int8_t *dst,
+                                           const int8_t *llr,
+                                           const int8_t *old,
+                                           uint16_t Z,
+                                           uint16_t cshift)
+{
+  const size_t lengths[2] = {(size_t)Z - cshift, cshift};
+  const size_t src_offsets[2] = {cshift, 0};
+  const size_t dst_offsets[2] = {0, (size_t)Z - cshift};
+
+  for (size_t part = 0; part < 2; ++part) {
+    for (size_t pos = 0; pos < lengths[part];) {
+      const size_t vl = __riscv_vsetvl_e8m4(lengths[part] - pos);
+      const vint8m4_t llr_v = __riscv_vle8_v_i8m4(llr + src_offsets[part] + pos, vl);
+      const vint8m4_t old_v = __riscv_vle8_v_i8m4(old + src_offsets[part] + pos, vl);
+      const vint8m4_t result = __riscv_vssub_vv_i8m4(llr_v, old_v, vl);
+      __riscv_vse8_v_i8m4(dst + dst_offsets[part] + pos, result, vl);
+      pos += vl;
+    }
+  }
+}
+
+static inline void nrLDPC_bn2cnProcBuf_fused_rvv(t_nrLDPC_lut *p_lut,
+                                                   const int8_t *bnProcBuf,
+                                                   const int8_t *llrRes,
+                                                   int8_t *cnProcBuf,
+                                                   uint16_t Z,
+                                                   uint8_t BG)
+{
+  uint16_t llr_base_by_bn_block[NR_LDPC_NUM_EDGE_BG1];
+  for (size_t block = 0; block < NR_LDPC_NUM_EDGE_BG1; ++block)
+    llr_base_by_bn_block[block] = UINT16_MAX;
+  uint8_t compact_group = 0;
+
+  for (uint8_t group = 0; group < 30; ++group) {
+    const uint8_t bn_count = p_lut->numBnInBnGroups[group];
+    if (bn_count == 0)
+      continue;
+
+    const uint32_t group_start = p_lut->startAddrBnGroups[compact_group];
+    const uint16_t llr_start = p_lut->startAddrBnGroupsLlr[compact_group];
+    const uint8_t degree = group + 1;
+    for (uint8_t edge = 0; edge < degree; ++edge) {
+      const uint32_t edge_start = group_start + (uint32_t)edge * bn_count * NR_LDPC_ZMAX;
+      const uint32_t edge_block = edge_start / NR_LDPC_ZMAX;
+      if (edge_block >= NR_LDPC_NUM_EDGE_BG1) {
+        fprintf(stderr, "LDPC fused map overflow: BG=%u group=%u compact=%u edge=%u count=%u start=%u block=%u max=%u\n",
+                BG, group, compact_group, edge, bn_count, edge_start, edge_block, NR_LDPC_NUM_EDGE_BG1);
+        abort();
+      }
+      llr_base_by_bn_block[edge_block] = llr_start;
+    }
+    ++compact_group;
+  }
+
+  static const uint8_t edges_bg1[] = {2, 3, 4, 5, 6, 7, 8, 9, 19};
+  static const uint8_t edges_bg2[] = {2, 3, 4, 5, 8, 10};
+  const uint8_t *edges = (BG == 1) ? edges_bg1 : edges_bg2;
+  const uint8_t *layout_counts = (BG == 1) ? lut_numCnInCnGroups_BG1_R13
+                                            : lut_numCnInCnGroups_BG2_R15;
+  const size_t group_count = (BG == 1) ? sizeof(edges_bg1) : sizeof(edges_bg2);
+
+  for (size_t group = 0; group < group_count; ++group) {
+    const uint32_t edge_stride = (uint32_t)layout_counts[group] * NR_LDPC_ZMAX;
+    for (uint8_t edge = 0; edge < edges[group]; ++edge) {
+      int8_t *dst = cnProcBuf + p_lut->startAddrCnGroups[group] + (uint32_t)edge * edge_stride;
+      const uint16_t *shifts = arrPos(p_lut->circShift[group], edge);
+      const uint32_t *bn_starts = arrPos(p_lut->startAddrBnProcBuf[group], edge);
+      const uint8_t *bn_positions = (BG == 1 && group == 0)
+                                        ? NULL
+                                        : arrPos(p_lut->bnPosBnProcBuf[group], edge);
+
+      for (uint8_t node = 0; node < p_lut->numCnInCnGroups[group]; ++node) {
+        const uint32_t bn_start = bn_starts[node];
+        const uint32_t bn_pos = (bn_positions == NULL) ? 0 : (uint32_t)bn_positions[node] * Z;
+        const uint32_t bn_block = bn_start / NR_LDPC_ZMAX;
+        if (bn_block >= NR_LDPC_NUM_EDGE_BG1 || llr_base_by_bn_block[bn_block] == UINT16_MAX) {
+          fprintf(stderr, "LDPC fused map miss: BG=%u group=%zu edge=%u node=%u start=%u block=%u\n",
+                  BG, group, edge, node, bn_start, bn_block);
+          abort();
+        }
+        const uint16_t llr_base = llr_base_by_bn_block[bn_block];
+        nrLDPC_bn_sub_circ_rvv(dst,
+                              llrRes + llr_base + bn_pos,
+                              bnProcBuf + bn_start + bn_pos,
+                              Z,
+                              shifts[node]);
+        dst += Z;
+      }
+    }
+  }
+}
+#endif
 
 /**
    \brief Copies the input LLRs to their corresponding place in the LLR processing buffer.
@@ -416,7 +524,3 @@ static inline void nrLDPC_llrRes2llrOut(t_nrLDPC_lut* p_lut, int8_t* llrOut, int
 }
 
 #endif
-
-
-
-

@@ -33,6 +33,118 @@
 #define __NR_LDPC_DECODER_CNPROC__H__
 
 #include "PHY/sse_intrin.h"
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+
+/*
+ * Compute all outgoing min-sum messages with two linear passes over the
+ * edges.  The generated SSE-compatible kernels rescan the other d - 1 edges
+ * for every output edge; this keeps x86 code simple but causes O(d^2) loads.
+ * Keeping the two minima and the total sign reduces that to O(d) loads while
+ * retaining the fixed OAI CN-buffer layout and exact int8 wrap semantics.
+ */
+static inline void nrLDPC_cnProc_2min_rvv(t_nrLDPC_lut *p_lut,
+                                           const int8_t *cnProcBuf,
+                                           int8_t *cnProcBufRes,
+                                           uint16_t Z,
+                                           uint8_t BG)
+{
+  static const uint8_t degrees_bg1[] = {3, 4, 5, 6, 7, 8, 9, 10, 19};
+  static const uint8_t degrees_bg2[] = {3, 4, 5, 6, 8, 10};
+  const uint8_t *degrees = (BG == 1) ? degrees_bg1 : degrees_bg2;
+  const uint8_t *layout_counts = (BG == 1) ? lut_numCnInCnGroups_BG1_R13
+                                            : lut_numCnInCnGroups_BG2_R15;
+  const size_t group_count = (BG == 1) ? sizeof(degrees_bg1) : sizeof(degrees_bg2);
+
+  for (size_t group = 0; group < group_count; ++group) {
+    const size_t count = (size_t)p_lut->numCnInCnGroups[group] * Z;
+    if (count == 0)
+      continue;
+
+    const size_t edge_stride = (size_t)layout_counts[group] * NR_LDPC_ZMAX;
+    const size_t group_start = p_lut->startAddrCnGroups[group];
+    const int8_t *group_in = cnProcBuf + group_start;
+    int8_t *group_out = cnProcBufRes + group_start;
+
+    for (size_t pos = 0; pos < count;) {
+      const size_t vl = __riscv_vsetvl_e8m4(count - pos);
+      vuint8m4_t min1 = __riscv_vmv_v_x_u8m4(UINT8_MAX, vl);
+      vuint8m4_t min2 = min1;
+      vint8m4_t total_sign = __riscv_vmv_v_x_i8m4(0, vl);
+
+      for (uint8_t edge = 0; edge < degrees[group]; ++edge) {
+        const vint8m4_t x = __riscv_vle8_v_i8m4(group_in + (size_t)edge * edge_stride + pos, vl);
+        const vint8m4_t edge_sign = __riscv_vsra_vx_i8m4(x, 7, vl);
+        const vuint8m4_t mag = __riscv_vreinterpret_v_i8m4_u8m4(
+            __riscv_vmax_vv_i8m4(x, __riscv_vneg_v_i8m4(x, vl), vl));
+        const vbool2_t below_min1 = __riscv_vmsltu_vv_u8m4_b2(mag, min1, vl);
+        const vuint8m4_t min2_candidate = __riscv_vminu_vv_u8m4(min2, mag, vl);
+
+        min2 = __riscv_vmerge_vvm_u8m4(min2_candidate, min1, below_min1, vl);
+        min1 = __riscv_vminu_vv_u8m4(min1, mag, vl);
+        total_sign = __riscv_vxor_vv_i8m4(total_sign, edge_sign, vl);
+      }
+
+      for (uint8_t edge = 0; edge < degrees[group]; ++edge) {
+        const vint8m4_t x = __riscv_vle8_v_i8m4(group_in + (size_t)edge * edge_stride + pos, vl);
+        const vint8m4_t edge_sign = __riscv_vsra_vx_i8m4(x, 7, vl);
+        const vuint8m4_t mag = __riscv_vreinterpret_v_i8m4_u8m4(
+            __riscv_vmax_vv_i8m4(x, __riscv_vneg_v_i8m4(x, vl), vl));
+        const vbool2_t is_min1 = __riscv_vmseq_vv_u8m4_b2(mag, min1, vl);
+        const vuint8m4_t out_mag = __riscv_vmerge_vvm_u8m4(min1, min2, is_min1, vl);
+        const vint8m4_t out_sign = __riscv_vxor_vv_i8m4(total_sign, edge_sign, vl);
+        const vint8m4_t signed_mag = __riscv_vreinterpret_v_u8m4_i8m4(out_mag);
+        const vint8m4_t value = __riscv_vsub_vv_i8m4(
+            __riscv_vxor_vv_i8m4(signed_mag, out_sign, vl), out_sign, vl);
+
+        __riscv_vse8_v_i8m4(group_out + (size_t)edge * edge_stride + pos, value, vl);
+      }
+      pos += vl;
+    }
+  }
+}
+
+static inline uint32_t nrLDPC_cnProcPc_rvv(t_nrLDPC_lut *p_lut,
+                                           const int8_t *cnProcBuf,
+                                           const int8_t *cnProcBufRes,
+                                           uint16_t Z,
+                                           const uint8_t *degrees,
+                                           const uint8_t *layout_counts,
+                                           size_t group_count)
+{
+  const uint8_t *actual_counts = p_lut->numCnInCnGroups;
+  const uint32_t *group_starts = p_lut->startAddrCnGroups;
+
+  for (size_t group = 0; group < group_count; ++group) {
+    const size_t count = (size_t)actual_counts[group] * Z;
+    if (count == 0)
+      continue;
+
+    const size_t edge_stride = (size_t)layout_counts[group] * NR_LDPC_ZMAX;
+    const int8_t *group_in = cnProcBuf + group_starts[group];
+    const int8_t *group_result = cnProcBufRes + group_starts[group];
+
+    for (size_t pos = 0; pos < count;) {
+      const size_t vl = __riscv_vsetvl_e8m2(count - pos);
+      vint8m2_t parity = __riscv_vmv_v_x_i8m2(0, vl);
+
+      for (uint8_t edge = 0; edge < degrees[group]; ++edge) {
+        const size_t offset = (size_t)edge * edge_stride + pos;
+        const vint8m2_t input = __riscv_vle8_v_i8m2(group_in + offset, vl);
+        const vint8m2_t result = __riscv_vle8_v_i8m2(group_result + offset, vl);
+        const vint8m2_t sum = __riscv_vsadd_vv_i8m2(input, result, vl);
+        parity = __riscv_vxor_vv_i8m2(parity, __riscv_vsra_vx_i8m2(sum, 7, vl), vl);
+      }
+
+      const vbool4_t failed = __riscv_vmsne_vx_i8m2_b4(parity, 0, vl);
+      if (__riscv_vcpop_m_b4(failed, vl) != 0)
+        return 1;
+      pos += vl;
+    }
+  }
+  return 0;
+}
+#endif
 
 /**
    \brief Performs CN processing for BG2 on the CN processing buffer and stores the results in the CN processing results buffer.
@@ -886,6 +998,11 @@ static inline void nrLDPC_cnProc_BG1(t_nrLDPC_lut* p_lut, int8_t* cnProcBuf, int
 */
 static inline uint32_t nrLDPC_cnProcPc_BG1(t_nrLDPC_lut* p_lut, int8_t* cnProcBuf, int8_t* cnProcBufRes, uint16_t Z)
 {
+#if defined(__riscv_vector)
+    static const uint8_t degrees[] = {3, 4, 5, 6, 7, 8, 9, 10, 19};
+    return nrLDPC_cnProcPc_rvv(p_lut, cnProcBuf, cnProcBufRes, Z, degrees,
+                               lut_numCnInCnGroups_BG1_R13, sizeof(degrees));
+#endif
     const uint8_t*  lut_numCnInCnGroups   = p_lut->numCnInCnGroups;
     const uint32_t* lut_startAddrCnGroups = p_lut->startAddrCnGroups;
 
@@ -1527,6 +1644,11 @@ static inline uint32_t nrLDPC_cnProcPc_BG1(t_nrLDPC_lut* p_lut, int8_t* cnProcBu
 */
 static inline uint32_t nrLDPC_cnProcPc_BG2(t_nrLDPC_lut* p_lut, int8_t* cnProcBuf, int8_t* cnProcBufRes, uint16_t Z)
 {
+#if defined(__riscv_vector)
+    static const uint8_t degrees[] = {3, 4, 5, 6, 8, 10};
+    return nrLDPC_cnProcPc_rvv(p_lut, cnProcBuf, cnProcBufRes, Z, degrees,
+                               lut_numCnInCnGroups_BG2_R15, sizeof(degrees));
+#endif
     const uint8_t*  lut_numCnInCnGroups   = p_lut->numCnInCnGroups;
     const uint32_t* lut_startAddrCnGroups = p_lut->startAddrCnGroups;
 
@@ -1956,6 +2078,3 @@ static inline uint32_t nrLDPC_cnProcPc_BG2(t_nrLDPC_lut* p_lut, int8_t* cnProcBu
 }
 
 #endif
-
-
-

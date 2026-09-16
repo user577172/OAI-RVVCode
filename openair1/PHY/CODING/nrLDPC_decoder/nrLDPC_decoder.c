@@ -256,6 +256,9 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
 
     // CN processing
     NR_LDPC_PROFILER_DETAIL(start_meas(&p_profiler->cnProc));
+#if defined(__riscv_vector)
+    nrLDPC_cnProc_2min_rvv(p_lut, cnProcBuf, cnProcBufRes, Z, BG);
+#else
     if (BG==1) {
 #ifndef UNROLL_CN_PROC
       nrLDPC_cnProc_BG1(p_lut, cnProcBuf, cnProcBufRes, Z);
@@ -342,6 +345,7 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
         }
 #endif        
     }
+#endif
     NR_LDPC_PROFILER_DETAIL(stop_meas(&p_profiler->cnProc));
 
 #ifdef NR_LDPC_DEBUG_MODE
@@ -438,6 +442,7 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
     nrLDPC_debug_writeBuffer2File(nrLDPC_buffers_LLR_RES, llrRes);
 #endif
 
+#if !defined(__riscv_vector) || defined(NR_LDPC_DEBUG_MODE)
     NR_LDPC_PROFILER_DETAIL(start_meas(&p_profiler->bnProc));
 
     if (BG==1) {
@@ -526,6 +531,7 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
 #ifdef NR_LDPC_PROFILER_DETAIL
     stop_meas(&p_profiler->bnProc);
 #endif
+#endif
 
 #ifdef NR_LDPC_DEBUG_MODE
     nrLDPC_debug_initBuffer2File(nrLDPC_buffers_BN_PROC_RES);
@@ -536,8 +542,12 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
 #ifdef NR_LDPC_PROFILER_DETAIL
     start_meas(&p_profiler->bn2cnProcBuf);
 #endif
+#if defined(__riscv_vector) && !defined(NR_LDPC_DEBUG_MODE)
+    nrLDPC_bn2cnProcBuf_fused_rvv(p_lut, bnProcBuf, llrRes, cnProcBuf, Z, BG);
+#else
     if (BG == 1) nrLDPC_bn2cnProcBuf_BG1(p_lut, bnProcBufRes, cnProcBuf, Z);
     else         nrLDPC_bn2cnProcBuf_BG2(p_lut, bnProcBufRes, cnProcBuf, Z);
+#endif
 #ifdef NR_LDPC_PROFILER_DETAIL
     stop_meas(&p_profiler->bn2cnProcBuf);
 #endif
@@ -562,6 +572,9 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
 #ifdef NR_LDPC_PROFILER_DETAIL
         start_meas(&p_profiler->cnProc);
 #endif
+#if defined(__riscv_vector)
+        nrLDPC_cnProc_2min_rvv(p_lut, cnProcBuf, cnProcBufRes, Z, BG);
+#else
         if (BG==1) {
 #ifndef UNROLL_CN_PROC
            nrLDPC_cnProc_BG1(p_lut, cnProcBuf, cnProcBufRes, Z);
@@ -643,6 +656,7 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
           }  
 #endif
         }
+#endif
 #ifdef NR_LDPC_PROFILER_DETAIL
         stop_meas(&p_profiler->cnProc);
 #endif
@@ -740,6 +754,7 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
         nrLDPC_debug_writeBuffer2File(nrLDPC_buffers_LLR_RES, llrRes);
 #endif
 
+#if !defined(__riscv_vector) || defined(NR_LDPC_DEBUG_MODE)
         NR_LDPC_PROFILER_DETAIL(start_meas(&p_profiler->bnProc));
 #ifndef UNROLL_BN_PROC
         nrLDPC_bnProc(p_lut, bnProcBuf, bnProcBufRes, llrRes, Z);
@@ -821,6 +836,7 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
 #endif
 
         NR_LDPC_PROFILER_DETAIL(stop_meas(&p_profiler->bnProc));
+#endif
 
 #ifdef NR_LDPC_DEBUG_MODE
         nrLDPC_debug_writeBuffer2File(nrLDPC_buffers_BN_PROC_RES, bnProcBufRes);
@@ -828,10 +844,14 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
 
         // BN results to CN processing buffer
         NR_LDPC_PROFILER_DETAIL(start_meas(&p_profiler->bn2cnProcBuf));
+#if defined(__riscv_vector) && !defined(NR_LDPC_DEBUG_MODE)
+        nrLDPC_bn2cnProcBuf_fused_rvv(p_lut, bnProcBuf, llrRes, cnProcBuf, Z, BG);
+#else
         if (BG == 1)
           nrLDPC_bn2cnProcBuf_BG1(p_lut, bnProcBufRes, cnProcBuf, Z);
         else
           nrLDPC_bn2cnProcBuf_BG2(p_lut, bnProcBufRes, cnProcBuf, Z);
+#endif
         NR_LDPC_PROFILER_DETAIL(stop_meas(&p_profiler->bn2cnProcBuf));
 
 #ifdef NR_LDPC_DEBUG_MODE
@@ -881,7 +901,3 @@ static inline uint32_t nrLDPC_decoder_core(int8_t* p_llr,
     }
     return numIter;
 }
-
-
-
-

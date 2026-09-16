@@ -59,6 +59,10 @@ int nr_slot_fep(PHY_VARS_NR_UE *ue,
   }
 
   dft_size_idx_t dftsize = get_dft(frame_parms->ofdm_symbol_size);
+  bool requires_aligned_dft = true;
+#if defined(__riscv_vector)
+  requires_aligned_dft = frame_parms->ofdm_symbol_size != 2048;
+#endif
   // This is for misalignment issues
   c16_t tmp_dft_in[frame_parms->ofdm_symbol_size] __attribute__ ((aligned (32)));
 
@@ -154,7 +158,7 @@ int nr_slot_fep_ul(NR_DL_FRAME_PARMS *frame_parms,
            (frame_parms->ofdm_symbol_size - sample_offset + rxdata_offset) * sizeof(int32_t));
     rxdata_ptr = (int16_t *)tmp_dft_in;
 
-  } else if (((rxdata_offset - sample_offset) & 7) != 0) {
+  } else if (requires_aligned_dft && ((rxdata_offset - sample_offset) & 7) != 0) {
 
     // if input to dft is not 256-bit aligned
     memcpy((void *)&tmp_dft_in[0],

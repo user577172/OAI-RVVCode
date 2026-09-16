@@ -397,6 +397,11 @@ __attribute__((always_inline)) static inline void bfly2_256(simde__m256i *x0,
                                                             simde__m256i *y1,
                                                             simde__m256i *tw)
 {
+#if defined(__riscv_vector)
+  oai_rvv_bfly2_q15_i16((const int16_t *)x0, (const int16_t *)x1,
+                        (const int16_t *)tw, (int16_t *)y0,
+                        (int16_t *)y1, 8, 0);
+#else
   simde__m256i x0r_2, x0i_2, x1r_2, x1i_2, dy0r, dy1r, dy0i, dy1i;
   simde__m256i bfly2_tmp1, bfly2_tmp2;
 
@@ -416,6 +421,7 @@ __attribute__((always_inline)) static inline void bfly2_256(simde__m256i *x0,
   bfly2_tmp1 = simde_mm256_unpacklo_epi32(dy1r,dy1i);
   bfly2_tmp2 = simde_mm256_unpackhi_epi32(dy1r,dy1i);
   *y1 = simde_mm256_packs_epi32(bfly2_tmp1,bfly2_tmp2);
+#endif
 }
 
 __attribute__((always_inline)) static inline void bfly2_tw1(simde__m128i *x0, simde__m128i *x1, simde__m128i *y0, simde__m128i *y1)
@@ -465,6 +471,11 @@ __attribute__((always_inline)) static inline void ibfly2_256(simde__m256i *x0,
                                                              simde__m256i *y1,
                                                              simde__m256i *tw)
 {
+#if defined(__riscv_vector)
+  oai_rvv_bfly2_q15_i16((const int16_t *)x0, (const int16_t *)x1,
+                        (const int16_t *)tw, (int16_t *)y0,
+                        (int16_t *)y1, 8, 1);
+#else
   simde__m256i x0r_2, x0i_2, x1r_2, x1i_2, dy0r, dy1r, dy0i, dy1i;
   simde__m256i bfly2_tmp1, bfly2_tmp2;
 
@@ -484,6 +495,7 @@ __attribute__((always_inline)) static inline void ibfly2_256(simde__m256i *x0,
   bfly2_tmp1 = simde_mm256_unpacklo_epi32(dy1r,dy1i);
   bfly2_tmp2 = simde_mm256_unpackhi_epi32(dy1r,dy1i);
   *y1 = simde_mm256_packs_epi32(bfly2_tmp1,bfly2_tmp2);
+#endif
 }
 
 
@@ -2481,15 +2493,25 @@ void idft1024(int16_t *x,int16_t *y,unsigned char scale)
 }
 
 int16_t tw2048[2048] __attribute__((aligned(32)));
+#if defined(__riscv_vector)
+static uint32_t rvv_bitrev2048[2048] __attribute__((aligned(64)));
+#endif
 
 void dft2048(int16_t *x,int16_t *y,unsigned char scale)
 {
+#if defined(__riscv_vector)
+  oai_rvv_fft2048_packed_i32(x, y, tw2048, rvv_bitrev2048, 0, scale > 0);
+  return;
+#endif
 
   simd256_q15_t xtmp[256],*xtmpp,*x256 = (simd256_q15_t *)x;
-  simd256_q15_t ytmp[256],*tw2048_256p=(simd256_q15_t *)tw2048,*y256=(simd256_q15_t *)y,*y256p=(simd256_q15_t *)y;
+  simd256_q15_t ytmp[256],*tw2048_256p=(simd256_q15_t *)tw2048,*y256p=(simd256_q15_t *)y;
   simd256_q15_t *ytmpp = &ytmp[0];
   int i;
+#if !defined(__riscv_vector)
+  simd256_q15_t *y256=(simd256_q15_t *)y;
   simd256_q15_t ONE_OVER_SQRT2_Q15_128 = set1_int16_simd256(ONE_OVER_SQRT2_Q15);
+#endif
 
 
   xtmpp = xtmp;
@@ -2545,6 +2567,9 @@ void dft2048(int16_t *x,int16_t *y,unsigned char scale)
   }
 
   if (scale>0) {
+#if defined(__riscv_vector)
+    oai_dfts_mulhrs_i16(y, 4096, ONE_OVER_SQRT2_Q15);
+#else
     y256p = y256;
 
     for (i=0; i<16; i++) {
@@ -2566,18 +2591,26 @@ void dft2048(int16_t *x,int16_t *y,unsigned char scale)
       y256p[15] = mulhi_int16_simd256(y256p[15],ONE_OVER_SQRT2_Q15_128);
       y256p+=16;
     }
+#endif
   }
 
 }
 
 void idft2048(int16_t *x,int16_t *y,unsigned char scale)
 {
+#if defined(__riscv_vector)
+  oai_rvv_fft2048_packed_i32(x, y, tw2048, rvv_bitrev2048, 1, scale > 0);
+  return;
+#endif
 
   simd256_q15_t xtmp[256],*xtmpp,*x256 = (simd256_q15_t *)x;
-  simd256_q15_t ytmp[256],*tw2048_256p=(simd256_q15_t *)tw2048,*y256=(simd256_q15_t *)y,*y256p=(simd256_q15_t *)y;
+  simd256_q15_t ytmp[256],*tw2048_256p=(simd256_q15_t *)tw2048,*y256p=(simd256_q15_t *)y;
   simd256_q15_t *ytmpp = &ytmp[0];
   int i;
+#if !defined(__riscv_vector)
+  simd256_q15_t *y256=(simd256_q15_t *)y;
   simd256_q15_t ONE_OVER_SQRT2_Q15_128 = set1_int16_simd256(ONE_OVER_SQRT2_Q15);
+#endif
 
   xtmpp = xtmp;
   
@@ -2632,6 +2665,9 @@ void idft2048(int16_t *x,int16_t *y,unsigned char scale)
   }
 
   if (scale>0) {
+#if defined(__riscv_vector)
+    oai_dfts_mulhrs_i16(y, 4096, ONE_OVER_SQRT2_Q15);
+#else
     y256p = y256;
 
     for (i=0; i<16; i++) {
@@ -2653,6 +2689,7 @@ void idft2048(int16_t *x,int16_t *y,unsigned char scale)
       y256p[15] = mulhi_int16_simd256(y256p[15],ONE_OVER_SQRT2_Q15_128);
       y256p+=16;
     }
+#endif
   }
 
 }
@@ -7058,6 +7095,17 @@ int dfts_autoinit(void)
 {
   init_rad4(1024,tw1024);
   init_rad2(2048,tw2048);
+#if defined(__riscv_vector)
+  for (uint32_t i = 0; i < 2048; ++i) {
+    uint32_t value = i;
+    uint32_t reversed = 0;
+    for (unsigned int bit = 0; bit < 11; ++bit) {
+      reversed = (reversed << 1) | (value & 1);
+      value >>= 1;
+    }
+    rvv_bitrev2048[i] = reversed;
+  }
+#endif
   init_rad4(4096,tw4096);
   init_rad2(8192,tw8192);
   init_rad4(16384,tw16384);
