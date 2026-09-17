@@ -374,7 +374,6 @@ oai_rvv_fft2048_packed_i32(const int16_t *input, int16_t *output,
                            int inverse, int final_scale)
 {
   int32_t data[2048] __attribute__((aligned(64)));
-  size_t done;
 
 #define OAI_RVV_UNPACK_RE(name, packed, vl_)                                  \
   vint32m1_t name = __riscv_vsra_vx_i32m1(                                   \
@@ -640,94 +639,112 @@ oai_rvv_fft2048_packed_i32(const int16_t *input, int16_t *output,
     }
   }
 
-  for (unsigned int stage = 9, width = 512; stage <= 11;
-       ++stage, width <<= 1) {
-    const unsigned int half = width >> 1;
-    const unsigned int tw_step = 2048 / width;
-    const unsigned int qshift = stage <= 5 ? 16 : 15;
-    if (stage <= 4) {
-      const size_t blocks = 2048 / width;
-      const ptrdiff_t stride = (ptrdiff_t)width * sizeof(int32_t);
-      for (unsigned int j = 0; j < half; ++j) {
-        const int32_t wr = twiddle[2 * j * tw_step];
-        const int32_t wi0 = twiddle[2 * j * tw_step + 1];
-        const int32_t wi = inverse ? -wi0 : wi0;
-        size_t block = 0;
-        while (block < blocks) {
-          const size_t vl = __riscv_vsetvl_e32m1(blocks - block);
-          int32_t *a = data + block * width + j;
-          int32_t *b = a + half;
-          vint32m1_t ap = __riscv_vlse32_v_i32m1(a, stride, vl);
-          vint32m1_t bp = __riscv_vlse32_v_i32m1(b, stride, vl);
-          OAI_RVV_UNPACK_RE(ar, ap, vl); OAI_RVV_UNPACK_IM(ai, ap, vl);
-          OAI_RVV_UNPACK_RE(br, bp, vl); OAI_RVV_UNPACK_IM(bi, bp, vl);
-          vint32m1_t tr = __riscv_vsub_vv_i32m1(
-              __riscv_vmul_vx_i32m1(br, wr, vl),
-              __riscv_vmul_vx_i32m1(bi, wi, vl), vl);
-          vint32m1_t ti = __riscv_vadd_vv_i32m1(
-              __riscv_vmul_vx_i32m1(br, wi, vl),
-              __riscv_vmul_vx_i32m1(bi, wr, vl), vl);
-          vint32m1_t aq_r = __riscv_vmul_vx_i32m1(ar, INT16_MAX, vl);
-          vint32m1_t aq_i = __riscv_vmul_vx_i32m1(ai, INT16_MAX, vl);
-          vint32m1_t o0r = OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aq_r,tr,vl),qshift,vl);
-          vint32m1_t o0i = OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aq_i,ti,vl),qshift,vl);
-          vint32m1_t o1r = OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aq_r,tr,vl),qshift,vl);
-          vint32m1_t o1i = OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aq_i,ti,vl),qshift,vl);
-          __riscv_vsse32_v_i32m1(a, stride, OAI_RVV_PACK_COMPLEX(o0r,o0i,vl), vl);
-          __riscv_vsse32_v_i32m1(b, stride, OAI_RVV_PACK_COMPLEX(o1r,o1i,vl), vl);
-          block += vl;
-        }
+  /* Fuse stages nine and ten.  Each pass consumes four contiguous 256-point
+   * quarters and writes the complete 1024-point result only once. */
+  for (unsigned int base = 0; base < 2048; base += 1024) {
+    size_t j = 0;
+    while (j < 256) {
+      const size_t vl = __riscv_vsetvl_e32m1(256 - j);
+      int32_t *p = data + base + j;
+      vint32m1_t x0p = __riscv_vle32_v_i32m1(p + 0, vl);
+      vint32m1_t x1p = __riscv_vle32_v_i32m1(p + 256, vl);
+      vint32m1_t x2p = __riscv_vle32_v_i32m1(p + 512, vl);
+      vint32m1_t x3p = __riscv_vle32_v_i32m1(p + 768, vl);
+      const int32_t *tw32 = (const int32_t *)twiddle;
+      vint32m1_t w9p = __riscv_vlse32_v_i32m1(
+          tw32 + 4 * j, 4 * (ptrdiff_t)sizeof(int32_t), vl);
+      vint32m1_t w10ap = __riscv_vlse32_v_i32m1(
+          tw32 + 2 * j, 2 * (ptrdiff_t)sizeof(int32_t), vl);
+      vint32m1_t w10bp = __riscv_vlse32_v_i32m1(
+          tw32 + 2 * (j + 256), 2 * (ptrdiff_t)sizeof(int32_t), vl);
+      OAI_RVV_UNPACK_RE(x0r,x0p,vl); OAI_RVV_UNPACK_IM(x0i,x0p,vl);
+      OAI_RVV_UNPACK_RE(x1r,x1p,vl); OAI_RVV_UNPACK_IM(x1i,x1p,vl);
+      OAI_RVV_UNPACK_RE(x2r,x2p,vl); OAI_RVV_UNPACK_IM(x2i,x2p,vl);
+      OAI_RVV_UNPACK_RE(x3r,x3p,vl); OAI_RVV_UNPACK_IM(x3i,x3p,vl);
+      OAI_RVV_UNPACK_RE(w9r,w9p,vl); OAI_RVV_UNPACK_IM(w9i0,w9p,vl);
+      OAI_RVV_UNPACK_RE(w10ar,w10ap,vl); OAI_RVV_UNPACK_IM(w10ai0,w10ap,vl);
+      OAI_RVV_UNPACK_RE(w10br,w10bp,vl); OAI_RVV_UNPACK_IM(w10bi0,w10bp,vl);
+      vint32m1_t w9i=inverse?__riscv_vneg_v_i32m1(w9i0,vl):w9i0;
+      vint32m1_t w10ai=inverse?__riscv_vneg_v_i32m1(w10ai0,vl):w10ai0;
+      vint32m1_t w10bi=inverse?__riscv_vneg_v_i32m1(w10bi0,vl):w10bi0;
+#define OAI_RVV_CMUL_V(prefix_,xr_,xi_,wr_,wi_)                              \
+      vint32m1_t prefix_##r=__riscv_vsub_vv_i32m1(                           \
+          __riscv_vmul_vv_i32m1((xr_),(wr_),vl),                             \
+          __riscv_vmul_vv_i32m1((xi_),(wi_),vl),vl);                         \
+      vint32m1_t prefix_##i=__riscv_vadd_vv_i32m1(                           \
+          __riscv_vmul_vv_i32m1((xr_),(wi_),vl),                             \
+          __riscv_vmul_vv_i32m1((xi_),(wr_),vl),vl)
+#define OAI_RVV_RAD2_V(prefix0_,prefix1_,ar_,ai_,tr_,ti_)                    \
+      vint32m1_t prefix0_##r=OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(      \
+          __riscv_vmul_vx_i32m1((ar_),INT16_MAX,vl),(tr_),vl),15,vl);       \
+      vint32m1_t prefix0_##i=OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(      \
+          __riscv_vmul_vx_i32m1((ai_),INT16_MAX,vl),(ti_),vl),15,vl);       \
+      vint32m1_t prefix1_##r=OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(      \
+          __riscv_vmul_vx_i32m1((ar_),INT16_MAX,vl),(tr_),vl),15,vl);       \
+      vint32m1_t prefix1_##i=OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(      \
+          __riscv_vmul_vx_i32m1((ai_),INT16_MAX,vl),(ti_),vl),15,vl)
+      OAI_RVV_CMUL_V(t1,x1r,x1i,w9r,w9i);
+      OAI_RVV_CMUL_V(t3,x3r,x3i,w9r,w9i);
+      OAI_RVV_RAD2_V(a0,a1,x0r,x0i,t1r,t1i);
+      OAI_RVV_RAD2_V(a2,a3,x2r,x2i,t3r,t3i);
+      OAI_RVV_CMUL_V(u2,a2r,a2i,w10ar,w10ai);
+      OAI_RVV_CMUL_V(u3,a3r,a3i,w10br,w10bi);
+      OAI_RVV_RAD2_V(y0,y2,a0r,a0i,u2r,u2i);
+      OAI_RVV_RAD2_V(y1,y3,a1r,a1i,u3r,u3i);
+#undef OAI_RVV_RAD2_V
+#undef OAI_RVV_CMUL_V
+      __riscv_vse32_v_i32m1(p+0,OAI_RVV_PACK_COMPLEX(y0r,y0i,vl),vl);
+      __riscv_vse32_v_i32m1(p+256,OAI_RVV_PACK_COMPLEX(y1r,y1i,vl),vl);
+      __riscv_vse32_v_i32m1(p+512,OAI_RVV_PACK_COMPLEX(y2r,y2i,vl),vl);
+      __riscv_vse32_v_i32m1(p+768,OAI_RVV_PACK_COMPLEX(y3r,y3i,vl),vl);
+      j += vl;
+    }
+  }
+
+  /* Final radix-2 stage and optional 1/sqrt(2) scaling write directly to the
+   * caller's output, avoiding a full temporary-array store/load round trip. */
+  {
+    size_t j = 0;
+    while (j < 1024) {
+      const size_t vl = __riscv_vsetvl_e32m1(1024 - j);
+      vint32m1_t ap=__riscv_vle32_v_i32m1(data+j,vl);
+      vint32m1_t bp=__riscv_vle32_v_i32m1(data+1024+j,vl);
+      vint32m1_t tp=__riscv_vle32_v_i32m1((const int32_t *)twiddle+j,vl);
+      OAI_RVV_UNPACK_RE(ar,ap,vl); OAI_RVV_UNPACK_IM(ai,ap,vl);
+      OAI_RVV_UNPACK_RE(br,bp,vl); OAI_RVV_UNPACK_IM(bi,bp,vl);
+      OAI_RVV_UNPACK_RE(wr,tp,vl); OAI_RVV_UNPACK_IM(wi0,tp,vl);
+      vint32m1_t wi=inverse?__riscv_vneg_v_i32m1(wi0,vl):wi0;
+      vint32m1_t tr=__riscv_vsub_vv_i32m1(
+          __riscv_vmul_vv_i32m1(br,wr,vl),__riscv_vmul_vv_i32m1(bi,wi,vl),vl);
+      vint32m1_t ti=__riscv_vadd_vv_i32m1(
+          __riscv_vmul_vv_i32m1(br,wi,vl),__riscv_vmul_vv_i32m1(bi,wr,vl),vl);
+      vint32m1_t aqr=__riscv_vmul_vx_i32m1(ar,INT16_MAX,vl);
+      vint32m1_t aqi=__riscv_vmul_vx_i32m1(ai,INT16_MAX,vl);
+      vint32m1_t o0r=OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aqr,tr,vl),15,vl);
+      vint32m1_t o0i=OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aqi,ti,vl),15,vl);
+      vint32m1_t o1r=OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aqr,tr,vl),15,vl);
+      vint32m1_t o1i=OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aqi,ti,vl),15,vl);
+      if (final_scale) {
+#define OAI_RVV_FINAL_SCALE(v_)                                               \
+        __riscv_vmin_vx_i32m1(__riscv_vmax_vx_i32m1(                         \
+            __riscv_vsra_vx_i32m1(__riscv_vadd_vx_i32m1(                    \
+                __riscv_vmul_vx_i32m1((v_),23170,vl),16384,vl),15,vl),      \
+            INT16_MIN,vl),INT16_MAX,vl)
+        o0r=OAI_RVV_FINAL_SCALE(o0r); o0i=OAI_RVV_FINAL_SCALE(o0i);
+        o1r=OAI_RVV_FINAL_SCALE(o1r); o1i=OAI_RVV_FINAL_SCALE(o1i);
+#undef OAI_RVV_FINAL_SCALE
       }
-    } else {
-      for (unsigned int base = 0; base < 2048; base += width) {
-        size_t j = 0;
-        while (j < half) {
-          const size_t vl = __riscv_vsetvl_e32m1(half - j);
-          int32_t *a = data + base + j;
-          int32_t *b = a + half;
-          const int32_t *tw = (const int32_t *)twiddle + j * tw_step;
-          const ptrdiff_t tw_stride = (ptrdiff_t)tw_step * sizeof(int32_t);
-          vint32m1_t ap = __riscv_vle32_v_i32m1(a, vl);
-          vint32m1_t bp = __riscv_vle32_v_i32m1(b, vl);
-          vint32m1_t tp = __riscv_vlse32_v_i32m1(tw, tw_stride, vl);
-          OAI_RVV_UNPACK_RE(ar, ap, vl); OAI_RVV_UNPACK_IM(ai, ap, vl);
-          OAI_RVV_UNPACK_RE(br, bp, vl); OAI_RVV_UNPACK_IM(bi, bp, vl);
-          OAI_RVV_UNPACK_RE(wr, tp, vl); OAI_RVV_UNPACK_IM(wi0, tp, vl);
-          vint32m1_t wi = inverse ? __riscv_vneg_v_i32m1(wi0, vl) : wi0;
-          vint32m1_t tr = __riscv_vsub_vv_i32m1(
-              __riscv_vmul_vv_i32m1(br, wr, vl),
-              __riscv_vmul_vv_i32m1(bi, wi, vl), vl);
-          vint32m1_t ti = __riscv_vadd_vv_i32m1(
-              __riscv_vmul_vv_i32m1(br, wi, vl),
-              __riscv_vmul_vv_i32m1(bi, wr, vl), vl);
-          vint32m1_t aq_r = __riscv_vmul_vx_i32m1(ar, INT16_MAX, vl);
-          vint32m1_t aq_i = __riscv_vmul_vx_i32m1(ai, INT16_MAX, vl);
-          vint32m1_t o0r = OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aq_r,tr,vl),qshift,vl);
-          vint32m1_t o0i = OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aq_i,ti,vl),qshift,vl);
-          vint32m1_t o1r = OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aq_r,tr,vl),qshift,vl);
-          vint32m1_t o1i = OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aq_i,ti,vl),qshift,vl);
-          __riscv_vse32_v_i32m1(a, OAI_RVV_PACK_COMPLEX(o0r,o0i,vl), vl);
-          __riscv_vse32_v_i32m1(b, OAI_RVV_PACK_COMPLEX(o1r,o1i,vl), vl);
-          j += vl;
-        }
-      }
+      __riscv_vse32_v_i32m1((int32_t *)output+j,
+          OAI_RVV_PACK_COMPLEX(o0r,o0i,vl),vl);
+      __riscv_vse32_v_i32m1((int32_t *)output+1024+j,
+          OAI_RVV_PACK_COMPLEX(o1r,o1i,vl),vl);
+      j += vl;
     }
   }
 #undef OAI_RVV_UNPACK_RE
 #undef OAI_RVV_UNPACK_IM
 #undef OAI_RVV_FFT32_PACK
 #undef OAI_RVV_PACK_COMPLEX
-  if (final_scale) {
-    oai_dfts_mulhrs_copy_i16((const int16_t *)data, output, 4096, 23170);
-  } else {
-    done = 0;
-    while (done < 2048) {
-      const size_t vl = __riscv_vsetvl_e32m1(2048 - done);
-      vint32m1_t value = __riscv_vle32_v_i32m1(data + done, vl);
-      __riscv_vse32_v_i32m1((int32_t *)output + done, value, vl);
-      done += vl;
-    }
-  }
 }
 
 /*
