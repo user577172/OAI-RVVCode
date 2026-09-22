@@ -2500,7 +2500,7 @@ static uint32_t rvv_bitrev2048[2048] __attribute__((aligned(64)));
 void dft2048(int16_t *x,int16_t *y,unsigned char scale)
 {
 #if defined(__riscv_vector)
-  oai_rvv_fft2048_packed_i32(x, y, tw2048, rvv_bitrev2048, 0, scale > 0);
+  oai_rvv_fft2048_packed_i32(x, y, tw2048, rvv_bitrev2048, 0, scale > 0, 0);
   return;
 #endif
 
@@ -2599,7 +2599,7 @@ void dft2048(int16_t *x,int16_t *y,unsigned char scale)
 void idft2048(int16_t *x,int16_t *y,unsigned char scale)
 {
 #if defined(__riscv_vector)
-  oai_rvv_fft2048_packed_i32(x, y, tw2048, rvv_bitrev2048, 1, scale > 0);
+  oai_rvv_fft2048_packed_i32(x, y, tw2048, rvv_bitrev2048, 1, scale > 0, 0);
   return;
 #endif
 
@@ -7217,6 +7217,45 @@ void idft_implementation(uint8_t sizeidx, int16_t *input, int16_t *output, unsig
         } else
           idft_ftab[sizeidx].func(input,output,scale_flag);
 };
+
+void idft_batch_implementation(uint8_t sizeidx,
+                               const int16_t *input,
+                               uint32_t input_stride,
+                               int16_t *output,
+                               uint32_t output_stride,
+                               uint8_t count,
+                               uint16_t prefix_samples,
+                               unsigned char scale_flag)
+{
+  AssertFatal(sizeidx < IDFT_SIZE_IDXTABLESIZE,
+              "Invalid batched idft size index %i\n", sizeidx);
+  for (uint8_t symbol = 0; symbol < count; ++symbol) {
+#if defined(__riscv_vector)
+    /* The native 2048-point RVV kernel accepts naturally aligned packed
+     * complex samples, including CP-offset destinations. */
+    if (sizeidx == IDFT_2048) {
+      oai_rvv_fft2048_packed_i32(
+          (int16_t *)input + 2 * symbol * input_stride,
+          output + 2 * symbol * output_stride,
+          tw2048, rvv_bitrev2048, 1, scale_flag > 0, prefix_samples);
+      if (symbol + 1 < count)
+        __builtin_prefetch((const int32_t *)input +
+                           (symbol + 1) * input_stride, 0, 3);
+    } else
+#endif
+    {
+      idft_implementation(sizeidx,
+                          (int16_t *)input + 2 * symbol * input_stride,
+                          output + 2 * symbol * output_stride,
+                          scale_flag);
+      if (prefix_samples != 0)
+        memcpy(output + 2 * (symbol * output_stride - prefix_samples),
+               output + 2 * (symbol * output_stride +
+                             idft_ftab[sizeidx].size - prefix_samples),
+               prefix_samples * 2 * sizeof(int16_t));
+    }
+  }
+}
 
 #endif
 

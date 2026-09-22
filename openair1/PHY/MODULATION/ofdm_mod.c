@@ -162,6 +162,26 @@ void PHY_ofdm_mod(const int *input, /// pointer to complex input
 
   idft_size_idx_t idft_size = get_idft(fftsize);
 
+#if defined(__riscv_vector)
+  /* Submit a complete run of equal-CP 2048-point symbols through one module
+   * call.  The initial implementation deliberately preserves the proven
+   * per-symbol kernel; subsequent RVV work can vectorize across this batch
+   * without changing PHY_ofdm_mod or any simulation/radio-facing API. */
+  if (etype == CYCLIC_PREFIX && fftsize == 2048 && nb_symbols > 1) {
+    const uint32_t output_stride = fftsize + nb_prefix_samples;
+    int16_t *first_symbol = (int16_t *)(output + nb_prefix_samples);
+    idft_batch(idft_size,
+               (const int16_t *)input,
+               fftsize,
+               first_symbol,
+               output_stride,
+               nb_symbols,
+               nb_prefix_samples,
+               1);
+    return;
+  }
+#endif
+
 #ifdef DEBUG_OFDM_MOD
   printf("[PHY] OFDM mod (size %d,prefix %d) Symbols %d, input %p, output %p\n",
          fftsize,

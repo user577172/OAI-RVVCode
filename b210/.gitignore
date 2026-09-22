@@ -1,0 +1,6 @@
+# The active file may contain deployment-specific addresses and identifiers.
+.env
+
+# Runtime files are created outside this directory, but ignore editor backups.
+*.swp
+*~

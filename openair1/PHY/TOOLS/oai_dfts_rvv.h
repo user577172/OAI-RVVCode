@@ -371,7 +371,8 @@ oai_rvv_fft2048_i16(const int16_t *input, int16_t *output,
 static inline void
 oai_rvv_fft2048_packed_i32(const int16_t *input, int16_t *output,
                            const int16_t *twiddle, const uint32_t *bitrev,
-                           int inverse, int final_scale)
+                           int inverse, int final_scale,
+                           uint16_t prefix_samples)
 {
   int32_t data[2048] __attribute__((aligned(64)));
 
@@ -704,42 +705,79 @@ oai_rvv_fft2048_packed_i32(const int16_t *input, int16_t *output,
   /* Final radix-2 stage and optional 1/sqrt(2) scaling write directly to the
    * caller's output, avoiding a full temporary-array store/load round trip. */
   {
+#define OAI_RVV_UNPACK_RE_M2(name_, packed_, vl_)                            \
+    vint32m2_t name_ = __riscv_vsra_vx_i32m2(                               \
+        __riscv_vsll_vx_i32m2((packed_),16,(vl_)),16,(vl_))
+#define OAI_RVV_UNPACK_IM_M2(name_, packed_, vl_)                            \
+    vint32m2_t name_ = __riscv_vsra_vx_i32m2((packed_),16,(vl_))
+#define OAI_RVV_FFT32_PACK_M2(value_, shift_, vl_)                           \
+    __riscv_vmin_vx_i32m2(                                                  \
+        __riscv_vmax_vx_i32m2(                                             \
+            __riscv_vsra_vx_i32m2(                                         \
+                __riscv_vadd_vx_i32m2(                                     \
+                    (value_),INT32_C(1)<<((shift_)-1),(vl_)),               \
+                (shift_),(vl_)),INT16_MIN,(vl_)),                           \
+        INT16_MAX,(vl_))
+#define OAI_RVV_PACK_COMPLEX_M2(re_, im_, vl_)                               \
+    __riscv_vreinterpret_v_u32m2_i32m2(                                    \
+        __riscv_vor_vv_u32m2(                                              \
+            __riscv_vand_vx_u32m2(                                        \
+                __riscv_vreinterpret_v_i32m2_u32m2((re_)),                 \
+                UINT32_C(0xffff),(vl_)),                                   \
+            __riscv_vsll_vx_u32m2(                                        \
+                __riscv_vreinterpret_v_i32m2_u32m2((im_)),16,(vl_)),       \
+            (vl_)))
     size_t j = 0;
     while (j < 1024) {
-      const size_t vl = __riscv_vsetvl_e32m1(1024 - j);
-      vint32m1_t ap=__riscv_vle32_v_i32m1(data+j,vl);
-      vint32m1_t bp=__riscv_vle32_v_i32m1(data+1024+j,vl);
-      vint32m1_t tp=__riscv_vle32_v_i32m1((const int32_t *)twiddle+j,vl);
-      OAI_RVV_UNPACK_RE(ar,ap,vl); OAI_RVV_UNPACK_IM(ai,ap,vl);
-      OAI_RVV_UNPACK_RE(br,bp,vl); OAI_RVV_UNPACK_IM(bi,bp,vl);
-      OAI_RVV_UNPACK_RE(wr,tp,vl); OAI_RVV_UNPACK_IM(wi0,tp,vl);
-      vint32m1_t wi=inverse?__riscv_vneg_v_i32m1(wi0,vl):wi0;
-      vint32m1_t tr=__riscv_vsub_vv_i32m1(
-          __riscv_vmul_vv_i32m1(br,wr,vl),__riscv_vmul_vv_i32m1(bi,wi,vl),vl);
-      vint32m1_t ti=__riscv_vadd_vv_i32m1(
-          __riscv_vmul_vv_i32m1(br,wi,vl),__riscv_vmul_vv_i32m1(bi,wr,vl),vl);
-      vint32m1_t aqr=__riscv_vmul_vx_i32m1(ar,INT16_MAX,vl);
-      vint32m1_t aqi=__riscv_vmul_vx_i32m1(ai,INT16_MAX,vl);
-      vint32m1_t o0r=OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aqr,tr,vl),15,vl);
-      vint32m1_t o0i=OAI_RVV_FFT32_PACK(__riscv_vadd_vv_i32m1(aqi,ti,vl),15,vl);
-      vint32m1_t o1r=OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aqr,tr,vl),15,vl);
-      vint32m1_t o1i=OAI_RVV_FFT32_PACK(__riscv_vsub_vv_i32m1(aqi,ti,vl),15,vl);
+      const size_t vl = __riscv_vsetvl_e32m2(1024 - j);
+      vint32m2_t ap=__riscv_vle32_v_i32m2(data+j,vl);
+      vint32m2_t bp=__riscv_vle32_v_i32m2(data+1024+j,vl);
+      vint32m2_t tp=__riscv_vle32_v_i32m2((const int32_t *)twiddle+j,vl);
+      OAI_RVV_UNPACK_RE_M2(ar,ap,vl); OAI_RVV_UNPACK_IM_M2(ai,ap,vl);
+      OAI_RVV_UNPACK_RE_M2(br,bp,vl); OAI_RVV_UNPACK_IM_M2(bi,bp,vl);
+      OAI_RVV_UNPACK_RE_M2(wr,tp,vl); OAI_RVV_UNPACK_IM_M2(wi0,tp,vl);
+      vint32m2_t wi=inverse?__riscv_vneg_v_i32m2(wi0,vl):wi0;
+      vint32m2_t tr=__riscv_vsub_vv_i32m2(
+          __riscv_vmul_vv_i32m2(br,wr,vl),__riscv_vmul_vv_i32m2(bi,wi,vl),vl);
+      vint32m2_t ti=__riscv_vadd_vv_i32m2(
+          __riscv_vmul_vv_i32m2(br,wi,vl),__riscv_vmul_vv_i32m2(bi,wr,vl),vl);
+      vint32m2_t aqr=__riscv_vmul_vx_i32m2(ar,INT16_MAX,vl);
+      vint32m2_t aqi=__riscv_vmul_vx_i32m2(ai,INT16_MAX,vl);
+      vint32m2_t o0r=OAI_RVV_FFT32_PACK_M2(__riscv_vadd_vv_i32m2(aqr,tr,vl),15,vl);
+      vint32m2_t o0i=OAI_RVV_FFT32_PACK_M2(__riscv_vadd_vv_i32m2(aqi,ti,vl),15,vl);
+      vint32m2_t o1r=OAI_RVV_FFT32_PACK_M2(__riscv_vsub_vv_i32m2(aqr,tr,vl),15,vl);
+      vint32m2_t o1i=OAI_RVV_FFT32_PACK_M2(__riscv_vsub_vv_i32m2(aqi,ti,vl),15,vl);
       if (final_scale) {
 #define OAI_RVV_FINAL_SCALE(v_)                                               \
-        __riscv_vmin_vx_i32m1(__riscv_vmax_vx_i32m1(                         \
-            __riscv_vsra_vx_i32m1(__riscv_vadd_vx_i32m1(                    \
-                __riscv_vmul_vx_i32m1((v_),23170,vl),16384,vl),15,vl),      \
+        __riscv_vmin_vx_i32m2(__riscv_vmax_vx_i32m2(                         \
+            __riscv_vsra_vx_i32m2(__riscv_vadd_vx_i32m2(                    \
+                __riscv_vmul_vx_i32m2((v_),23170,vl),16384,vl),15,vl),      \
             INT16_MIN,vl),INT16_MAX,vl)
         o0r=OAI_RVV_FINAL_SCALE(o0r); o0i=OAI_RVV_FINAL_SCALE(o0i);
         o1r=OAI_RVV_FINAL_SCALE(o1r); o1i=OAI_RVV_FINAL_SCALE(o1i);
 #undef OAI_RVV_FINAL_SCALE
       }
-      __riscv_vse32_v_i32m1((int32_t *)output+j,
-          OAI_RVV_PACK_COMPLEX(o0r,o0i,vl),vl);
-      __riscv_vse32_v_i32m1((int32_t *)output+1024+j,
-          OAI_RVV_PACK_COMPLEX(o1r,o1i,vl),vl);
+      __riscv_vse32_v_i32m2((int32_t *)output+j,
+          OAI_RVV_PACK_COMPLEX_M2(o0r,o0i,vl),vl);
+      vint32m2_t o1p = OAI_RVV_PACK_COMPLEX_M2(o1r,o1i,vl);
+      __riscv_vse32_v_i32m2((int32_t *)output+1024+j,o1p,vl);
+      /* The cyclic prefix is the tail of the final half.  Duplicate lanes
+       * here while o1p is live, avoiding a later load/copy pass. */
+      if (prefix_samples != 0 && j + vl > 1024 - prefix_samples) {
+        const size_t first = 1024 - prefix_samples;
+        const size_t skip = j < first ? first - j : 0;
+        const size_t cp_vl = vl - skip;
+        vint32m2_t cp = skip ? __riscv_vslidedown_vx_i32m2(o1p,skip,vl) : o1p;
+        __riscv_vse32_v_i32m2((int32_t *)output - prefix_samples +
+                                  (j + skip - first),
+                              cp,cp_vl);
+      }
       j += vl;
     }
+#undef OAI_RVV_PACK_COMPLEX_M2
+#undef OAI_RVV_FFT32_PACK_M2
+#undef OAI_RVV_UNPACK_IM_M2
+#undef OAI_RVV_UNPACK_RE_M2
   }
 #undef OAI_RVV_UNPACK_RE
 #undef OAI_RVV_UNPACK_IM

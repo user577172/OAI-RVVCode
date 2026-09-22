@@ -1,0 +1,3 @@
+# Keep the results directory in Git without committing generated logs.
+*
+!.gitignore

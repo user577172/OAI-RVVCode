@@ -646,8 +646,20 @@ void init_fft(uint16_t size,
 
 typedef  void(*dftfunc_t)(uint8_t sizeidx,int16_t *sigF,int16_t *sig,unsigned char scale_flag);
 typedef void (*idftfunc_t)(uint8_t sizeidx, int16_t *sigF, int16_t *sig, unsigned char scale_flag);
+/* Batched IDFT interface.  Strides are expressed in complex samples, not
+ * bytes.  Keeping the legacy single-transform entry point allows every
+ * existing caller and non-RVV implementation to remain unchanged. */
+typedef void (*idftbatchfunc_t)(uint8_t sizeidx,
+                               const int16_t *sigF,
+                               uint32_t input_stride,
+                               int16_t *sig,
+                               uint32_t output_stride,
+                               uint8_t count,
+                               uint16_t prefix_samples,
+                               unsigned char scale_flag);
 extern dftfunc_t dft;
 extern idftfunc_t idft;
+extern idftbatchfunc_t idft_batch;
 int load_dftslib(void);
 
 #define SZ_ENUM(Sz) DFT_##Sz,

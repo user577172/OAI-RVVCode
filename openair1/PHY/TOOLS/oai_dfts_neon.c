@@ -7126,6 +7126,31 @@ void idft_implementation(uint8_t sizeidx, int16_t *input, int16_t *output, unsig
           idft_ftab[sizeidx].func(input,output,scale_flag);
 };
 
+void idft_batch_implementation(uint8_t sizeidx,
+                               const int16_t *input,
+                               uint32_t input_stride,
+                               int16_t *output,
+                               uint32_t output_stride,
+                               uint8_t count,
+                               uint16_t prefix_samples,
+                               unsigned char scale_flag)
+{
+  AssertFatal(sizeidx < IDFT_SIZE_IDXTABLESIZE,
+              "Invalid batched idft size index %i\n", sizeidx);
+  for (uint8_t symbol = 0; symbol < count; ++symbol)
+  {
+    idft_implementation(sizeidx,
+                        (int16_t *)input + 2 * symbol * input_stride,
+                        output + 2 * symbol * output_stride,
+                        scale_flag);
+    if (prefix_samples != 0)
+      memcpy(output + 2 * (symbol * output_stride - prefix_samples),
+             output + 2 * (symbol * output_stride +
+                           idft_ftab[sizeidx].size - prefix_samples),
+             prefix_samples * 2 * sizeof(int16_t));
+  }
+}
+
 #endif
 
 /*---------------------------------------------------------------------------------------*/
