@@ -20,6 +20,7 @@
  */
 
 #if defined(__x86_64__) || defined(__i386__) || defined(__riscv)
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,9 +30,11 @@
 #include <pthread.h>
 #include <execinfo.h>
 
-#if defined(__riscv_vector)
 #include "oai_dfts_rvv.h"
-#endif
+
+/* The fused two-at-a-time 16-point RVV path fails the DFT/IDFT accuracy
+ * tests.  Keep only that path opt-in; the remaining RVV kernels are accurate
+ * and substantially faster than compiling this whole module as scalar code. */
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1311,7 +1314,7 @@ __attribute__((always_inline)) static inline void dft16_simd256(int16_t *x, int1
 {
   simde__m256i *tw16a_256 = (simde__m256i *)tw16arep, *tw16b_256 = (simde__m256i *)tw16brep, *x256 = (simde__m256i *)x,
                *y256 = (simde__m256i *)y;
-#if defined(__riscv_vector)
+#if defined(__riscv_vector) && defined(OAI_ENABLE_EXPERIMENTAL_RVV_DFT16_FASTPATH)
   simde__m256i s1[4], s2[4], out[4];
   bfly4_tw1_256(x256,x256+1,x256+2,x256+3,s1,s1+1,s1+2,s1+3);
   oai_rvv_transpose_4x8_lane128_i32((const int32_t *)s1,(int32_t *)s2);
@@ -1497,7 +1500,7 @@ __attribute__((always_inline)) static inline void idft16_simd256(int16_t *x, int
 {
   simde__m256i *tw16a_256 = (simde__m256i *)tw16rep, *tw16b_256 = (simde__m256i *)tw16crep, *x256 = (simde__m256i *)x,
                *y256 = (simde__m256i *)y;
-#if defined(__riscv_vector)
+#if defined(__riscv_vector) && defined(OAI_ENABLE_EXPERIMENTAL_RVV_DFT16_FASTPATH)
   simde__m256i s1[4], s2[4], out[4];
   bfly4_tw1_256(x256,x256+1,x256+2,x256+3,s1,s1+3,s1+2,s1+1);
   oai_rvv_transpose_4x8_lane128_i32((const int32_t *)s1,(int32_t *)s2);
@@ -7230,13 +7233,15 @@ void idft_batch_implementation(uint8_t sizeidx,
   AssertFatal(sizeidx < IDFT_SIZE_IDXTABLESIZE,
               "Invalid batched idft size index %i\n", sizeidx);
   for (uint8_t symbol = 0; symbol < count; ++symbol) {
+    const int16_t *symbol_input = input + 2 * (size_t)symbol * input_stride;
+    int16_t *symbol_output = output + 2 * (size_t)symbol * output_stride;
 #if defined(__riscv_vector)
     /* The native 2048-point RVV kernel accepts naturally aligned packed
      * complex samples, including CP-offset destinations. */
     if (sizeidx == IDFT_2048) {
       oai_rvv_fft2048_packed_i32(
-          (int16_t *)input + 2 * symbol * input_stride,
-          output + 2 * symbol * output_stride,
+          (int16_t *)symbol_input,
+          symbol_output,
           tw2048, rvv_bitrev2048, 1, scale_flag > 0, prefix_samples);
       if (symbol + 1 < count)
         __builtin_prefetch((const int32_t *)input +
@@ -7245,13 +7250,12 @@ void idft_batch_implementation(uint8_t sizeidx,
 #endif
     {
       idft_implementation(sizeidx,
-                          (int16_t *)input + 2 * symbol * input_stride,
-                          output + 2 * symbol * output_stride,
+                          (int16_t *)symbol_input,
+                          symbol_output,
                           scale_flag);
       if (prefix_samples != 0)
-        memcpy(output + 2 * (symbol * output_stride - prefix_samples),
-               output + 2 * (symbol * output_stride +
-                             idft_ftab[sizeidx].size - prefix_samples),
+        memcpy(symbol_output - 2 * prefix_samples,
+               symbol_output + 2 * (idft_ftab[sizeidx].size - prefix_samples),
                prefix_samples * 2 * sizeof(int16_t));
     }
   }

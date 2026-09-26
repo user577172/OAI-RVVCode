@@ -87,8 +87,6 @@ unsigned short config_frames[4] = {2,9,11,13};
 #include "x2ap_eNB.h"
 #include "openair1/SCHED_NR/sched_nr.h"
 #include "openair2/SDAP/nr_sdap/nr_sdap.h"
-#include "plugins/common/src/plugins.h"
-#include "plugins/common/src/mac_plugins.h"
 
 pthread_cond_t nfapi_sync_cond;
 pthread_mutex_t nfapi_sync_mutex;
@@ -410,8 +408,6 @@ int stop_L1(module_id_t gnb_id)
   for (int inst = 0; inst < RC.nb_nr_L1_inst; inst++) {
     phy_free_nr_gNB(RC.gNB[inst]);
   }
-  free_mac_plugins();
-
   RC.gNB[gnb_id]->configured = 0;
   return 0;
 }
@@ -643,14 +639,6 @@ int main( int argc, char **argv ) {
   }
 
   config_sync_var=0;
-
-  // Init plugins (pass CLI parameters and frame_parms for channel emulation)
-  {
-    NR_DL_FRAME_PARMS *fp = &RC.gNB[0]->frame_parms;
-    init_plugins(fp);
-  }
-  init_mac_plugins();
-  printf("\nInitialized plugins\n\n");
 
 #ifdef E2_AGENT
 

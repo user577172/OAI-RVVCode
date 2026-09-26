@@ -3,18 +3,27 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
-OAI="${OAI_ROOT:-$(realpath "$SCRIPT_DIR/..")}" 
-BUILD="$OAI/cmake_targets/ran_build/build"
+OAI="${OAI_ROOT:-$(realpath "$SCRIPT_DIR/..")}"
+BUILD="${OAI_BUILD_DIR:-$OAI/cmake_targets/ran_build-riscv-gcc16/build}"
 RESULTS_DIR="${RESULTS_DIR:-$OAI/results}"
 GNB_IDEAL="$OAI/ci-scripts/conf_files/gnb.sa.band78.106prb.rfsim.conf"
 GNB_AWGN="${GNB_AWGN:-$OAI/.runtime/rfsim/gnb.sa.band78.106prb.awgn.conf}"
 UE_CONF="$OAI/targets/PROJECTS/GENERIC-NR-5GC/CONF/ue.conf"
+XSAI_ENV_ROOT="${XSAI_ENV_ROOT:-$HOME/xsai-env}"
+RISCV_ROOT="${RISCV:-$HOME/riscv-toolchain/opt/riscv-gcc16}"
+RISCV_SYSROOT="${RISCV_SYSROOT:-${QEMU_LD_PREFIX:-$RISCV_ROOT/sysroot}}"
+RISCV_LIBS_ROOT="${RISCV_LIBS_ROOT:-$HOME/riscv-toolchain/riscv-libs/install}"
+QEMU_RISCV64="${QEMU_RISCV64:-$XSAI_ENV_ROOT/qemu/build/qemu-riscv64}"
+QEMU_RESERVED_VA="${QEMU_RESERVED_VA:-32G}"
+QEMU_CPU_MODEL="${QEMU_CPU_MODEL:-max}"
 CPU_SET="${CPU_SET:-0-7}"
 MEASURE_SECONDS="${MEASURE_SECONDS:-120}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-20}"
 COOLDOWN_SECONDS="${COOLDOWN_SECONDS:-30}"
-SYNC_TIMEOUT="${SYNC_TIMEOUT:-20}"
-SYNC_ATTEMPTS="${SYNC_ATTEMPTS:-3}"
+GNB_START_TIMEOUT="${GNB_START_TIMEOUT:-120}"
+SYNC_TIMEOUT="${SYNC_TIMEOUT:-600}"
+SYNC_ATTEMPTS="${SYNC_ATTEMPTS:-1}"
+STATS_TIMEOUT="${STATS_TIMEOUT:-180}"
 
 MODE="${1:-}"
 REPEATS="${2:-1}"
@@ -30,11 +39,28 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [[ "$MODE" =~ ^(ideal|awgn|pair)$ ]] || { usage; exit 1; }
 [[ "$REPEATS" =~ ^[1-9][0-9]*$ ]] || die "repeat-count must be a positive integer"
 [[ "$START_RUN" =~ ^[1-9][0-9]*$ ]] || die "start-number must be a positive integer"
+[[ "$GNB_START_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "GNB_START_TIMEOUT must be a positive integer"
 [[ "$SYNC_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "SYNC_TIMEOUT must be a positive integer"
 [[ "$SYNC_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "SYNC_ATTEMPTS must be a positive integer"
+[[ "$STATS_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "STATS_TIMEOUT must be a positive integer"
 [[ -x "$BUILD/nr-softmodem" ]] || die "nr-softmodem not found: $BUILD"
 [[ -x "$BUILD/nr-uesoftmodem" ]] || die "nr-uesoftmodem not found: $BUILD"
 [[ -f "$GNB_IDEAL" && -f "$UE_CONF" ]] || die "OAI RFsim configuration is missing"
+[[ -x "$QEMU_RISCV64" ]] || die "qemu-riscv64 not found: $QEMU_RISCV64"
+[[ -d "$RISCV_SYSROOT" ]] || die "RISC-V sysroot not found: $RISCV_SYSROOT"
+[[ -x "$RISCV_ROOT/bin/riscv64-unknown-linux-gnu-gcc" ]] || \
+  die "RISC-V GCC not found under: $RISCV_ROOT"
+
+GCC_LIB_DIR="$(dirname "$("$RISCV_ROOT/bin/riscv64-unknown-linux-gnu-gcc" -print-libgcc-file-name)")"
+TARGET_LD_LIBRARY_PATH="${OAI_TARGET_LD_LIBRARY_PATH:-$BUILD:$RISCV_LIBS_ROOT/lksctp/lib:$RISCV_LIBS_ROOT/openssl/lib:$RISCV_LIBS_ROOT/libconfig/lib:$RISCV_ROOT/riscv64-unknown-linux-gnu/lib:$GCC_LIB_DIR}"
+QEMU_RUNNER=(
+  "$QEMU_RISCV64"
+  -R "$QEMU_RESERVED_VA"
+  -cpu "$QEMU_CPU_MODEL"
+  -L "$RISCV_SYSROOT"
+  -E MALLOC_ARENA_MAX=1
+  -E "LD_LIBRARY_PATH=$TARGET_LD_LIBRARY_PATH"
+)
 
 prepare_awgn_config() {
   [[ -f "$GNB_AWGN" ]] && return 0
@@ -75,23 +101,44 @@ stop_unit() {
   sudo systemctl reset-failed "$unit" 2>/dev/null || true
 }
 
-stop_oai_process() {
+oai_pids() {
   local name="$1"
-  pgrep -x "$name" >/dev/null || return 0
-  sudo pkill -INT -x "$name" 2>/dev/null || true
-  for _ in $(seq 1 10); do
-    pgrep -x "$name" >/dev/null || return 0
-    sleep 1
-  done
-  sudo pkill -KILL -x "$name" 2>/dev/null || true
+  local proc cmdline
+  {
+    pgrep -x "$name" 2>/dev/null || true
+    for proc in /proc/[0-9]*; do
+      [[ -r "$proc/cmdline" ]] || continue
+      cmdline="$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null || true)"
+      [[ "$cmdline" == *"$BUILD/$name"* ]] || continue
+      printf '%s\n' "${proc##*/}"
+    done
+  } | sort -nu
 }
 
-if pgrep -x nr-softmodem >/dev/null || pgrep -x nr-uesoftmodem >/dev/null; then
+has_oai_process() {
+  [[ -n "$(oai_pids "$1")" ]]
+}
+
+stop_oai_process() {
+  local name="$1"
+  local -a pids=()
+  mapfile -t pids < <(oai_pids "$name")
+  ((${#pids[@]} > 0)) || return 0
+  sudo kill -INT "${pids[@]}" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    has_oai_process "$name" || return 0
+    sleep 1
+  done
+  mapfile -t pids < <(oai_pids "$name")
+  ((${#pids[@]} == 0)) || sudo kill -KILL "${pids[@]}" 2>/dev/null || true
+}
+
+if has_oai_process nr-softmodem || has_oai_process nr-uesoftmodem; then
   echo "Found stale OAI processes; stopping them before the experiment"
   stop_oai_process nr-uesoftmodem
   stop_oai_process nr-softmodem
-  pgrep -x nr-softmodem >/dev/null && die "could not stop the existing gNB"
-  pgrep -x nr-uesoftmodem >/dev/null && die "could not stop the existing nrUE"
+  has_oai_process nr-softmodem && die "could not stop the existing gNB"
+  has_oai_process nr-uesoftmodem && die "could not stop the existing nrUE"
 fi
 
 cleanup() {
@@ -100,11 +147,20 @@ cleanup() {
   stop_oai_process nr-uesoftmodem
   stop_oai_process nr-softmodem
 }
-trap cleanup EXIT INT TERM
+
+handle_signal() {
+  local exit_code="$1"
+  trap - EXIT INT TERM
+  cleanup
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 wait_for_gnb() {
   local log="$1"
-  for _ in $(seq 1 60); do
+  for _ in $(seq 1 "$((GNB_START_TIMEOUT * 2))"); do
     if ss -ltn 2>/dev/null | grep -qE '[:.]4043[[:space:]]'; then
       return 0
     fi
@@ -141,7 +197,7 @@ capture_stats() {
   local final_marker="$3"
   local tmp_file="${target_file}.tmp"
 
-  for _ in $(seq 1 15); do
+  for _ in $(seq 1 "$STATS_TIMEOUT"); do
     if sudo test -s "$source_file" 2>/dev/null; then
       sudo cp "$source_file" "$tmp_file"
       sudo chown "$USER:$(id -gn)" "$tmp_file"
@@ -248,6 +304,7 @@ run_once() {
     --property=TasksMax=infinity \
     --property="StandardOutput=append:$prefix-gnb.log" \
     --property="StandardError=append:$prefix-gnb.log" \
+    "${QEMU_RUNNER[@]}" \
     "$BUILD/nr-softmodem" \
       -O "$gnb_conf" \
       --rfsim \
@@ -276,6 +333,7 @@ run_once() {
       --property=TasksMax=infinity \
       --property="StandardOutput=append:$prefix-nrue.log" \
       --property="StandardError=append:$prefix-nrue.log" \
+      "${QEMU_RUNNER[@]}" \
       "$BUILD/nr-uesoftmodem" \
         -O "$UE_CONF" \
         --rfsim \
@@ -358,10 +416,17 @@ run_once() {
     echo "measure_seconds=$MEASURE_SECONDS"
     echo "sync_timeout_seconds=$SYNC_TIMEOUT"
     echo "sync_attempts_used=$sync_attempt"
+    echo "gnb_start_timeout_seconds=$GNB_START_TIMEOUT"
+    echo "stats_timeout_seconds=$STATS_TIMEOUT"
     echo "statistics_scope=two_snapshot_window_difference"
     echo "maximum_scope=process_cumulative_at_end_snapshot"
     echo "cpu_set=$CPU_SET"
-    echo "launcher=systemd-transient-service"
+    echo "launcher=systemd-transient-service-qemu-user"
+    echo "qemu_binary=$QEMU_RISCV64"
+    echo "qemu_version=$($QEMU_RISCV64 --version | head -n 1)"
+    echo "qemu_cpu_model=$QEMU_CPU_MODEL"
+    echo "qemu_reserved_va=$QEMU_RESERVED_VA"
+    echo "riscv_sysroot=$RISCV_SYSROOT"
     echo "kernel=$(uname -r)"
     echo "gnb_binary_sha256=$(sha256sum "$BUILD/nr-softmodem" | awk '{print $1}')"
     echo "nrue_binary_sha256=$(sha256sum "$BUILD/nr-uesoftmodem" | awk '{print $1}')"
