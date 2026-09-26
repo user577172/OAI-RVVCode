@@ -597,8 +597,10 @@ oai_rvv_fft2048_packed_i32(const int16_t *input, int16_t *output,
       const int32_t w256br=twiddle[2*(j+64)*8];
       const int32_t w256bi0=twiddle[2*(j+64)*8+1];
       const int32_t w256bi=inverse ? -w256bi0 : w256bi0;
-      const size_t vl=__riscv_vsetvl_e32m1(blocks);
-      int32_t *base=data+j;
+      size_t block=0;
+      while (block < blocks) {
+      const size_t vl=__riscv_vsetvl_e32m1(blocks-block);
+      int32_t *base=data+256*block+j;
       vint32m1_t x0p=__riscv_vlse32_v_i32m1(base+0,stride,vl);
       vint32m1_t x1p=__riscv_vlse32_v_i32m1(base+64,stride,vl);
       vint32m1_t x2p=__riscv_vlse32_v_i32m1(base+128,stride,vl);
@@ -637,6 +639,8 @@ oai_rvv_fft2048_packed_i32(const int16_t *input, int16_t *output,
       __riscv_vsse32_v_i32m1(base+64,stride,OAI_RVV_PACK_COMPLEX(y1r,y1i,vl),vl);
       __riscv_vsse32_v_i32m1(base+128,stride,OAI_RVV_PACK_COMPLEX(y2r,y2i,vl),vl);
       __riscv_vsse32_v_i32m1(base+192,stride,OAI_RVV_PACK_COMPLEX(y3r,y3i,vl),vl);
+      block += vl;
+      }
     }
   }
 

@@ -52,6 +52,16 @@
 
 #include "common/ran_context.h"
 
+/*
+ * The x86 branch below uses only SIMDe types and operations, so it is also
+ * the portable implementation for RISC-V.  Define the legacy selector only
+ * after all headers have been included to avoid changing system-header ABI
+ * selection.
+ */
+#if defined(__riscv) && !defined(__i386__)
+  #define __i386__ 1
+#endif
+
 #define SHUFFLE16(a, b, c, d, e, f, g, h)     \
   simde_mm_set_epi8(h == -1 ? -1 : h * 2 + 1, \
                     h == -1 ? -1 : h * 2,     \
