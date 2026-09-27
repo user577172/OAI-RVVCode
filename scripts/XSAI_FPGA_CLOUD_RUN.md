@@ -28,18 +28,60 @@
 
 目标库包括 `libconfig`、OpenSSL、OpenBLAS、lksctp、SIMDe 和 zlib。默认不启用 UHD，因此当前镜像适用于 FPGA 上的 OAI CPU/PHY 程序验证和 PBCH 测试，不代表已经具备 B200 射频收发能力。
 
-## 2. 一次性编译和打包
+## 2. 编译与打包操作
+
+以下命令都需要在 OAI 根目录执行：
 
 ```bash
 cd ~/openairinterface5g
 git switch XSAI-FPGA
+```
+
+### 2.1 默认编译：生成 RV64 OAI 和 rootfs 包
+
+首次编译或者 OAI 源码发生变化时执行：
+
+```bash
+JOBS=8 ./scripts/build-oai-native.sh
+```
+
+`./scripts//build-oai-native.sh` 中多写一个 `/` 也可以运行，但建议统一使用上面的单斜杠写法。
+
+该命令会使用 RISC-V GCC 16 交叉编译以下主要程序：
+
+```text
+cmake_targets/ran_build-riscv-gcc16/build/nr-softmodem
+cmake_targets/ran_build-riscv-gcc16/build/nr-uesoftmodem
+cmake_targets/ran_build-riscv-gcc16/build/nr-cuup
+cmake_targets/ran_build-riscv-gcc16/build/nr_pbchsim
+```
+
+同时会收集 OAI 插件和目标动态库，生成：
+
+```text
+artifacts/oai-xsai-rv64/
+artifacts/oai-xsai-rv64-rootfs.tar.gz
+results/build-oai-riscv-gcc16-<时间戳>.log
+```
+
+默认命令不会构建 Linux/OpenSBI/GCPT，不会生成 `gcpt-oai-xsai.bin`，也不会把文件复制到 `~/nexst/tmp/`。
+
+### 2.2 完整构建：编译并生成 NEXST FPGA 镜像
+
+需要重新编译 OAI，并生成可上传到 NEXST 的 GCPT 镜像时执行：
+
+```bash
 JOBS=8 ./scripts/build-oai-native.sh \
   --build-fpga-image \
   --xsai-env ~/xsai-env \
   --nexst-dir ~/nexst
 ```
 
-如果 OAI 的 RV64 可执行文件已经生成，只重做打包和 FPGA 镜像：
+该命令依次完成：RV64 OAI 编译、rootfs 整理、Linux/initramfs 构建、OpenSBI/GCPT 打包，并把 `gcpt-oai-xsai.bin` 和校验文件复制到 `~/nexst/tmp/`。
+
+### 2.3 仅重新打包：复用已有 RV64 OAI
+
+如果 RV64 可执行文件已经成功生成，OAI 源码没有变化，只需重做 rootfs 和 FPGA 镜像：
 
 ```bash
 JOBS=8 ./scripts/build-oai-native.sh \
@@ -49,6 +91,10 @@ JOBS=8 ./scripts/build-oai-native.sh \
   --nexst-dir ~/nexst
 ```
 
+`--package-only` 会跳过 OAI 的 CMake 编译阶段；如果 `cmake_targets/ran_build-riscv-gcc16/build/` 中缺少所需可执行文件，该命令会报错，此时应改用 2.2 的完整构建命令。
+
+### 2.4 XSAI 内存参数
+
 脚本默认使用 4 GB 客体内存，并把 XSAI DMA 保留区设为 512 MB。上游默认的 3000 MB 保留区会使 Linux 只剩约 858 MB，内置 OAI 测试会被 OOM 杀死。OAI 不使用这块张量 DMA 池；如其他负载需要调整，可设置：
 
 ```bash
@@ -56,6 +102,16 @@ XSAI_MEMORY_SIZE_HUMAN=4GB \
 XSAI_DIRECT_MAP_MEM_SIZE_HUMAN=512MB \
 JOBS=8 ./scripts/build-oai-native.sh --package-only --build-fpga-image
 ```
+
+### 2.5 B200/UHD 可选构建
+
+默认构建不包含 RISC-V UHD。只有已经把目标架构 UHD 安装到 `~/riscv-toolchain/riscv-libs/install/uhd` 后，才使用：
+
+```bash
+JOBS=8 ./scripts/build-oai-native.sh --with-usrp
+```
+
+`--with-usrp` 只负责构建 B200/UHD 支持；如果还需要同时生成 FPGA GCPT 镜像，应把它与 2.2 中的参数一起使用。
 
 ## 3. 生成的产物
 
@@ -165,4 +221,3 @@ LD_LIBRARY_PATH="$bundle/lib" qemu-riscv64 \
 - GCPT SHA-256 校验通过。
 - NEMU 中 Linux 可用内存约 3.4 GB，未再发生 OOM。
 - NEMU 整机启动后 OAI PBCH 测试结果：CRC 0 错误、payload 0 错误、`PBCH test OK`、`OAI_XSAI_RESULT=PASS`。
-
