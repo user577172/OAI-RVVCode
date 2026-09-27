@@ -33,13 +33,12 @@
 #include "PHY/defs_gNB.h"
 #include "PHY/sse_intrin.h"
 #include "nr_phy_common.h"
-#include "plugins/neural_demapper/src/nr_demapper_extern.h"
 
 #ifdef __aarch64__
 #define USE_128BIT
 #endif
 
-void nr_ulsch_compute_llr_default(int32_t *rxdataF_comp,
+void nr_ulsch_compute_llr(int32_t *rxdataF_comp,
                           c16_t *ul_ch_mag,
                           c16_t *ul_ch_magb,
                           c16_t *ul_ch_magc,
@@ -66,38 +65,6 @@ void nr_ulsch_compute_llr_default(int32_t *rxdataF_comp,
       break;
   }
 }
-
-// START marker-compute-llr-start
-void nr_ulsch_compute_llr(int32_t *rxdataF_comp,
-                          c16_t *ul_ch_mag,
-                          c16_t *ul_ch_magb,
-                          c16_t *ul_ch_magc,
-                          int16_t *ulsch_llr,
-                          uint32_t nb_re,
-                          uint8_t symbol,
-                          uint8_t mod_order)
-{
-    int handled = 0;
-    if (demapper_interface.compute_llr)
-        handled = demapper_interface.compute_llr(rxdataF_comp,
-                                                 ul_ch_mag,
-                                                 ul_ch_magb,
-                                                 ul_ch_magc,
-                                                 ulsch_llr,
-                                                 nb_re,
-                                                 symbol,
-                                                 mod_order);
-    if (!handled)
-      nr_ulsch_compute_llr_default(rxdataF_comp,
-                                   ul_ch_mag,
-                                   ul_ch_magb,
-                                   ul_ch_magc,
-                                   ulsch_llr,
-                                   nb_re,
-                                   symbol,
-                                   mod_order);
-}
-// END marker-compute-llr-end
 
 /*
  * This function computes the LLRs of stream 0 (s_0) in presence of the interfering stream 1 (s_1) assuming that both symbols are

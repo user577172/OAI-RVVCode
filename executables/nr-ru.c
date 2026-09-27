@@ -72,9 +72,6 @@ static int DEFRUTPCORES[] = {-1,-1,-1,-1};
 #include <nfapi/oai_integration/vendor_ext.h>
 #include "executables/nr-softmodem-common.h"
 
-// Add this near the top of the file with other includes:
-#include "plugins/common/src/plugins.h"
-
 static void NRRCconfig_RU(configmodule_interface_t *cfg);
 
 /*************************************************************/
@@ -610,19 +607,6 @@ static void rx_rf(RU_t *ru, int *frame, int *slot)
     }
   }
 
-  // Emulates the channel using the plugin system (if enabled)
-  if (is_channel_emulation_enabled()) {
-    // Offset in the ru->common.rxdata buffer from which the slot samples start
-    const int data_offset = fp->get_samples_slot_timestamp(*slot, fp, 0) - ru->N_TA_offset;
-    // Read CIR data and update channel emulator sigma values
-    const void *cir_data = channel_emulator_cir_read_and_apply();
-    // Apply channel emulation
-    chn_emu_interface.compute(ru, *slot, fp,
-                               fp->ofdm_symbol_size + fp->nb_prefix_samples0,  // samples_first_symbol
-                               fp->ofdm_symbol_size + fp->nb_prefix_samples,   // samples_other_symbols
-                               "rx", data_offset, cir_data);
-  }
-
   // compute system frame number (SFN) according to O-RAN-WG4-CUS.0-v02.00 (using alpha=beta=0)
   //  this assumes that the USRP has been synchronized to the GPS time
   //  OAI uses timestamps in sample time stored in int64_t, but it will fit in double precision for many years to come.
@@ -808,16 +792,6 @@ void tx_rf(RU_t *ru, int frame,int slot, uint64_t timestamp)
   void *txp[nt];
   for (int i = 0; i < nt; i++)
     txp[i] = (void *)&ru->common.txdata[i][fp->get_samples_slot_timestamp(slot, fp, 0)] - sf_extension * sizeof(int32_t);
-
-  // Apply DL channel emulation before trx_write so the UE receives the faded signal
-  if (is_channel_emulation_enabled()) {
-    const int data_offset = fp->get_samples_slot_timestamp(slot, fp, 0) - sf_extension;
-    const void *cir_data = channel_emulator_cir_read_and_apply();
-    chn_emu_interface.compute(ru, slot, fp,
-                               fp->ofdm_symbol_size + fp->nb_prefix_samples0,  // samples_first_symbol
-                               fp->ofdm_symbol_size + fp->nb_prefix_samples,   // samples_other_symbols
-                               "tx", data_offset, cir_data);
-  }
 
   VCD_SIGNAL_DUMPER_DUMP_VARIABLE_BY_NAME(VCD_SIGNAL_DUMPER_VARIABLES_TRX_TST, (timestamp + ru->ts_offset) & 0xffffffff);
   VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_TRX_WRITE, 1);
@@ -1894,4 +1868,3 @@ static void NRRCconfig_RU(configmodule_interface_t *cfg)
   } // j=0..num_rus
   return;
 }
-
