@@ -3,7 +3,6 @@
 #include "nr_transport_proto.h"
 #include "PHY/impl_defs_top.h"
 #include "PHY/NR_TRANSPORT/nr_sch_dmrs.h"
-#include "plugins/neural_receiver/src/nr_receiver_extern.h"
 #include "PHY/NR_REFSIG/dmrs_nr.h"
 #include "PHY/NR_REFSIG/ptrs_nr.h"
 #include "PHY/NR_ESTIMATION/nr_ul_estimation.h"
@@ -1067,7 +1066,6 @@ typedef struct puschSymbolProc_s {
   int numSymbols;
   int16_t *llr;
   int16_t *scramblingSequence;
-  frame_t frame;
   uint32_t nvar;
   int beam_nb;
   task_ans_t *ans;
@@ -1087,36 +1085,7 @@ static void nr_pusch_symbol_processing(void *arg)
   nfapi_nr_pusch_pdu_t *rel15_ul = rdata->rel15_ul;
   int ulsch_id = rdata->ulsch_id;
   int slot = rdata->slot;
-  frame_t frame = rdata->frame;
   NR_gNB_PUSCH *pusch_vars = &gNB->pusch_vars[ulsch_id];
-  int decoding_handled = 0, output_capture_requested = 0;
-  int rx_plugin_enabled = receiver_interface.compute_llr && (!receiver_interface.symbols_requested || receiver_interface.symbols_requested(frame_parms));
-  if (rx_plugin_enabled && !(rel15_ul->pdu_bit_map & PUSCH_PDU_BITMAP_PUSCH_PTRS)) {
-    // not supported with custom receiver plugin
-    AssertFatal(!(rel15_ul->nrOfLayers == 1 && rel15_ul->transform_precoding == transformPrecoder_enabled && rel15_ul->qam_mod_order <= 6), "Unsupported code path");
-
-    int soffset = (slot % RU_RX_SLOT_DEPTH) * frame_parms->symbols_per_slot * frame_parms->ofdm_symbol_size;
-    decoding_handled = receiver_interface.compute_llr(gNB,
-                                   ulsch_id,
-                                   slot,
-                                   frame,
-                                   frame_parms,
-                                   pusch_vars,
-                                   rel15_ul,
-                                   gNB->common_vars.rxdataF[rdata->beam_nb],
-                                   (c16_t**)gNB->pusch_vars[ulsch_id].ul_ch_estimates,
-                                   rdata->llr, // symbol indexing: &llrs[pusch_vars->llr_offset[symbol] * rel15_ul->nrOfLayers],
-                                   soffset,
-                                   gNB->pusch_vars[ulsch_id].ul_valid_re_per_slot,
-                                   rdata->startSymbol,
-                                   rdata->numSymbols,
-                                   gNB->pusch_vars[ulsch_id].log2_maxh,
-                                   rdata->nvar);
-    if (decoding_handled == -1) {
-        decoding_handled = 0;
-        output_capture_requested = 1;
-    }
-  }
   for (int symbol = rdata->startSymbol; symbol < rdata->startSymbol + rdata->numSymbols; symbol++) {
     if (gNB->pusch_vars[ulsch_id].ul_valid_re_per_slot[symbol] == 0) 
       continue;
@@ -1129,38 +1098,35 @@ static void nr_pusch_symbol_processing(void *arg)
     for (int l = 0; l < rel15_ul->nrOfLayers; l++)
       llrss[l] = llrs[l];
 
-    int16_t *llr_ptr = &rdata->llr[pusch_vars->llr_offset[symbol] * rel15_ul->nrOfLayers];
-    if (!decoding_handled) {
-      inner_rx(gNB,
-               ulsch_id,
-               slot,
-               frame_parms,
-               pusch_vars,
-               rel15_ul,
-               gNB->common_vars.rxdataF[rdata->beam_nb],
-               (c16_t **)gNB->pusch_vars[ulsch_id].ul_ch_estimates,
-               llrss,
-               soffset,
-               gNB->pusch_vars[ulsch_id].ul_valid_re_per_slot[symbol],
-               symbol,
-               gNB->pusch_vars[ulsch_id].log2_maxh,
-               rdata->nvar,
-               rdata->rxFext_slot_mem,
-               rdata->pusch_ch_est_dmrs_interpl_slot_mem,
-               &rdata->resource_extraction_stats,
-               &rdata->channel_compensation_stats,
-               &rdata->llr_stats);
+    inner_rx(gNB,
+             ulsch_id,
+             slot,
+             frame_parms,
+             pusch_vars,
+             rel15_ul,
+             gNB->common_vars.rxdataF[rdata->beam_nb],
+             (c16_t **)gNB->pusch_vars[ulsch_id].ul_ch_estimates,
+             llrss,
+             soffset,
+             gNB->pusch_vars[ulsch_id].ul_valid_re_per_slot[symbol],
+             symbol,
+             gNB->pusch_vars[ulsch_id].log2_maxh,
+             rdata->nvar,
+             rdata->rxFext_slot_mem,
+             rdata->pusch_ch_est_dmrs_interpl_slot_mem,
+             &rdata->resource_extraction_stats,
+             &rdata->channel_compensation_stats,
+             &rdata->llr_stats);
 
-      // layer de-mapping
-      llr_ptr = llrs[0];
-      if (rel15_ul->nrOfLayers != 1) {
-        llr_ptr = &rdata->llr[pusch_vars->llr_offset[symbol] * rel15_ul->nrOfLayers];
-        for (int i = 0; i < (nb_re_pusch); i++)
-          for (int l = 0; l < rel15_ul->nrOfLayers; l++)
-            for (int m = 0; m < rel15_ul->qam_mod_order; m++)
-              llr_ptr[i * rel15_ul->nrOfLayers * rel15_ul->qam_mod_order + l * rel15_ul->qam_mod_order + m] =
-                  llrss[l][i * rel15_ul->qam_mod_order + m];
-      }
+    // layer de-mapping
+    int16_t *llr_ptr = llrs[0];
+    if (rel15_ul->nrOfLayers != 1) {
+      llr_ptr = &rdata->llr[pusch_vars->llr_offset[symbol] * rel15_ul->nrOfLayers];
+      for (int i = 0; i < nb_re_pusch; i++)
+        for (int l = 0; l < rel15_ul->nrOfLayers; l++)
+          for (int m = 0; m < rel15_ul->qam_mod_order; m++)
+            llr_ptr[i * rel15_ul->nrOfLayers * rel15_ul->qam_mod_order + l * rel15_ul->qam_mod_order + m] =
+                llrss[l][i * rel15_ul->qam_mod_order + m];
     }
     // unscrambling
     int16_t *llr16 = &rdata->llr[pusch_vars->llr_offset[symbol] * rel15_ul->nrOfLayers];
@@ -1168,26 +1134,6 @@ static void nr_pusch_symbol_processing(void *arg)
     const int end = nb_re_pusch * rel15_ul->qam_mod_order * rel15_ul->nrOfLayers;
     for (int i = 0; i < end; i++)
       llr16[i] = llr_ptr[i] * s[i];
-  }
-
-  if (rx_plugin_enabled && output_capture_requested) {
-    int soffset = (slot % RU_RX_SLOT_DEPTH) * frame_parms->symbols_per_slot * frame_parms->ofdm_symbol_size;
-    receiver_interface.compute_llr(gNB,
-                                   ulsch_id,
-                                   slot,
-                                   frame,
-                                   frame_parms,
-                                   pusch_vars,
-                                   rel15_ul,
-                                   NULL,
-                                   NULL,
-                                   rdata->llr, // symbol indexing: &llrs[pusch_vars->llr_offset[symbol] * rel15_ul->nrOfLayers],
-                                   soffset,
-                                   gNB->pusch_vars[ulsch_id].ul_valid_re_per_slot,
-                                   rdata->startSymbol,
-                                   rdata->numSymbols,
-                                   gNB->pusch_vars[ulsch_id].log2_maxh,
-                                   rdata->nvar);
   }
 
   // Task running in // completed
@@ -1484,13 +1430,6 @@ int nr_rx_pusch_tp(PHY_VARS_gNB *gNB,
 
   start_meas(&gNB->rx_pusch_symbol_processing_stats);
   int numSymbols = gNB->num_pusch_symbols_per_thread;
-  if (receiver_interface.symbols_requested) {
-    int numRequestedSymbols = receiver_interface.symbols_requested(frame_parms);
-    if (numRequestedSymbols < 0)
-      numSymbols = frame_parms->symbols_per_slot;
-    else if (numRequestedSymbols)
-      numSymbols = numRequestedSymbols;
-  }
   int total_res = 0;
   int const loop_iter = CEILIDIV(rel15_ul->nr_of_symbols, numSymbols);
   puschSymbolProc_t arr[loop_iter];
@@ -1529,9 +1468,6 @@ int nr_rx_pusch_tp(PHY_VARS_gNB *gNB,
       rdata->beam_nb = beam_nb;
       rdata->rxFext_slot_mem = rxFext_slot_mem;
       rdata->pusch_ch_est_dmrs_interpl_slot_mem = pusch_ch_est_dmrs_interpl_slot_mem;
-      // added for custom decoding
-      rdata->frame = frame;
-
       if (rel15_ul->pdu_bit_map & PUSCH_PDU_BITMAP_PUSCH_PTRS) {
         nr_pusch_symbol_processing(rdata);
       } else {

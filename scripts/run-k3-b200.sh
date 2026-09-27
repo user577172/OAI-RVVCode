@@ -2,23 +2,42 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
-OAI_ROOT="${OAI_ROOT:-$(realpath "$SCRIPT_DIR/..")}" 
-LEGACY_ROOT="${SIONNA_RK_ROOT:-$(realpath "$OAI_ROOT/../..")}" 
-B210_CONFIG_DIR="${B210_CONFIG_DIR:-$OAI_ROOT/b210}"
+if [[ -n "${OAI_BUNDLE_ROOT:-}" ]]; then
+    OAI_ROOT="$OAI_BUNDLE_ROOT"
+elif [[ -x "$SCRIPT_DIR/../bin/nr-softmodem" ]]; then
+    OAI_ROOT=$(realpath "$SCRIPT_DIR/..")
+else
+    OAI_ROOT=$(realpath "$SCRIPT_DIR/..")
+fi
+LEGACY_ROOT="${SIONNA_RK_ROOT:-$(realpath -m "$OAI_ROOT/../..")}"
+B210_CONFIG_DIR="${B210_CONFIG_DIR:-$OAI_ROOT/etc}"
+if [[ ! -r "$B210_CONFIG_DIR/gnb.sa.band78.24prbs.conf" ]]; then
+    B210_CONFIG_DIR="${B210_CONFIG_DIR_FALLBACK:-$OAI_ROOT/b210}"
+fi
 ENV_FILE="${B210_ENV_FILE:-${B200_ENV_FILE:-$B210_CONFIG_DIR/.env}}"
-DEFAULT_BUILD="$OAI_ROOT/cmake_targets/ran_build/build"
+if [[ -x "$OAI_ROOT/bin/nr-softmodem" ]]; then
+    DEFAULT_BUILD="$OAI_ROOT"
+else
+    DEFAULT_BUILD="$OAI_ROOT/cmake_targets/ran_build-riscv-gcc16/build"
+fi
 BUILD="$DEFAULT_BUILD"
 GNB_BIN="$BUILD/nr-softmodem"
+[[ -x "$GNB_BIN" ]] || GNB_BIN="$BUILD/bin/nr-softmodem"
+PBCH_BIN="$BUILD/nr_pbchsim"
+[[ -x "$PBCH_BIN" ]] || PBCH_BIN="$BUILD/bin/nr_pbchsim"
 GNB_TEMPLATE="${GNB_TEMPLATE:-$B210_CONFIG_DIR/gnb.sa.band78.24prbs.conf}"
-RUNTIME_DIR="${RUNTIME_DIR:-$OAI_ROOT/.runtime/k3-b200}"
+RUNTIME_DIR="${RUNTIME_DIR:-${TMPDIR:-/tmp}/oai-k3-b200}"
 RUNTIME_CONF="$RUNTIME_DIR/gnb.conf"
 UNIT="k3-b200-gnb.service"
-RESULTS_DIR="${RESULTS_DIR:-$OAI_ROOT/results}"
+RESULTS_DIR="${RESULTS_DIR:-${TMPDIR:-/tmp}/oai-results}"
 OPT_LOG="$RESULTS_DIR/k3-b200-optimization.log"
 JOURNAL_LOG="$RESULTS_DIR/k3-b200-gnb.log"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-active() { sudo systemctl is-active --quiet "$UNIT"; }
+if [[ "$EUID" == "0" ]] && ! command -v sudo >/dev/null 2>&1; then
+    sudo() { "$@"; }
+fi
+active() { command -v systemctl >/dev/null 2>&1 && sudo systemctl is-active --quiet "$UNIT"; }
 
 ensure_core() {
     if ! pgrep -x upf >/dev/null || ! pgrep -x smf >/dev/null || ! pgrep -x amf >/dev/null; then
@@ -154,6 +173,7 @@ preflight() {
     # load_env. This keeps the original build as the automatic fallback.
     BUILD="${K3_GNB_BUILD:-$DEFAULT_BUILD}"
     GNB_BIN="$BUILD/nr-softmodem"
+    [[ -x "$GNB_BIN" ]] || GNB_BIN="$BUILD/bin/nr-softmodem"
     [ "$(uname -m)" = "riscv64" ] || die "This launcher is for the RV64 K3; detected $(uname -m)."
     [ -x "$GNB_BIN" ] || die "Missing $GNB_BIN; build the native OAI gNB first."
     [ -r "$GNB_TEMPLATE" ] || die "Missing gNB template: $GNB_TEMPLATE"
@@ -184,8 +204,12 @@ write_runtime_config() {
 }
 
 start_gnb() {
-    ensure_core
-    ensure_ue_internet
+    if [[ "${K3_START_LOCAL_CORE:-0}" == "1" ]]; then
+        ensure_core
+    fi
+    if [[ "${K3_CONFIGURE_UE_INTERNET:-0}" == "1" ]]; then
+        ensure_ue_internet
+    fi
     preflight
     local allowed_cpus="${K3_GNB_ALLOWED_CPUS:-8-15}"
     active && die "$UNIT is already active."
@@ -226,7 +250,7 @@ start_gnb() {
         --property=LimitMEMLOCK=infinity \
         --property=Nice=-20 \
         --property=TasksMax=infinity \
-        --setenv="LD_LIBRARY_PATH=$BUILD" \
+        --setenv="LD_LIBRARY_PATH=$BUILD/lib:$BUILD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         --working-directory="$BUILD" \
         "${args[@]}"
     sleep 3
@@ -240,13 +264,63 @@ start_gnb() {
     echo "Logs: $0 log"
 }
 
+run_pbch_smoke() {
+    BUILD="${K3_GNB_BUILD:-$DEFAULT_BUILD}"
+    PBCH_BIN="$BUILD/nr_pbchsim"
+    [[ -x "$PBCH_BIN" ]] || PBCH_BIN="$BUILD/bin/nr_pbchsim"
+    [[ "$(uname -m)" == "riscv64" ]] || die "PBCH smoke test requires RV64; detected $(uname -m)."
+    [[ -x "$PBCH_BIN" ]] || die "Missing PBCH simulator: $PBCH_BIN"
+    export LD_LIBRARY_PATH="$BUILD/lib:$BUILD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    echo "Running the OAI PBCH FPGA smoke test"
+    exec "$PBCH_BIN" -s20 -S21 -n1 -o8000 -I -R106
+}
+
+run_gnb_foreground() {
+    if [[ "${K3_START_LOCAL_CORE:-0}" == "1" ]]; then
+        ensure_core
+    fi
+    if [[ "${K3_CONFIGURE_UE_INTERNET:-0}" == "1" ]]; then
+        ensure_ue_internet
+    fi
+    preflight
+    write_runtime_config
+
+    local allowed_cpus="${K3_GNB_ALLOWED_CPUS:-0}"
+    local -a args=(
+        "$GNB_BIN" -O "$RUNTIME_CONF"
+        --RUs.[0].sdr_addrs "serial=$USRP_SERIAL"
+        --telnetsrv
+        --reorder-thread-disable 1
+        --log_config.global_log_options level,nocolor,time
+    )
+    if [[ "${K3_GNB_CONTINUOUS_TX:-0}" == "1" ]]; then
+        args+=(--continuous-tx)
+    fi
+    if [[ -n "${K3_GNB_THREAD_POOL:-}" ]]; then
+        args+=(--thread-pool "$K3_GNB_THREAD_POOL")
+    fi
+    if [[ -n "${GNB_EXTRA_OPTIONS:-}" ]]; then
+        read -r -a extra <<< "$GNB_EXTRA_OPTIONS"
+        args+=("${extra[@]}")
+    fi
+
+    mkdir -p "$RESULTS_DIR"
+    export LD_LIBRARY_PATH="$BUILD/lib:$BUILD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    record "foreground-start build=$BUILD usrp=$USRP_SERIAL amf=$AMF_IP gnb_ip=$RESOLVED_GNB_IP cpus=$allowed_cpus"
+    if command -v taskset >/dev/null 2>&1; then
+        exec taskset -c "$allowed_cpus" "${args[@]}" 2>&1 | tee -a "$JOURNAL_LOG"
+    fi
+    exec "${args[@]}" 2>&1 | tee -a "$JOURNAL_LOG"
+}
+
 case "${1:-}" in
     check)
-        ensure_core
         preflight
         write_runtime_config
         echo "Preflight passed. Runtime config: $RUNTIME_CONF"
         ;;
+    pbch) run_pbch_smoke ;;
+    run) run_gnb_foreground ;;
     start) start_gnb ;;
     status)
         if [ -x "$LEGACY_ROOT/scripts/status-cn5g-k3.sh" ]; then
@@ -279,7 +353,7 @@ case "${1:-}" in
         fi
         ;;
     *)
-        echo "Usage: $0 check|start|status|log|stop"
+        echo "Usage: $0 pbch|check|run|start|status|log|stop"
         exit 2
         ;;
 esac
