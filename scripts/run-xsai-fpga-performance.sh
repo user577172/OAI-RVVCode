@@ -12,7 +12,8 @@ UE_CONF="$BUILD/etc/ue.conf"
 RESULTS_DIR="${RESULTS_DIR:-/results/oai-xsai-newwork}"
 SYNC_TIMEOUT="${SYNC_TIMEOUT:-1800}"
 GNB_READY_TIMEOUT="${GNB_READY_TIMEOUT:-900}"
-MEASUREMENT_SECONDS="${MEASUREMENT_SECONDS:-30}"
+WARMUP_SECONDS="${WARMUP_SECONDS:-20}"
+MEASUREMENT_SECONDS="${MEASUREMENT_SECONDS:-120}"
 FRAME_MARKER_INTERVAL="${FRAME_MARKER_INTERVAL:-128}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"
 CLEANUP_TIMEOUT="${CLEANUP_TIMEOUT:-15}"
@@ -36,9 +37,16 @@ is_positive_integer() {
     *) return 0 ;;
   esac
 }
+is_nonnegative_integer() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 is_positive_integer "$SYNC_TIMEOUT" || die "invalid SYNC_TIMEOUT=$SYNC_TIMEOUT"
 is_positive_integer "$GNB_READY_TIMEOUT" || die "invalid GNB_READY_TIMEOUT=$GNB_READY_TIMEOUT"
+is_nonnegative_integer "$WARMUP_SECONDS" || die "invalid WARMUP_SECONDS=$WARMUP_SECONDS"
 is_positive_integer "$MEASUREMENT_SECONDS" || die "invalid MEASUREMENT_SECONDS=$MEASUREMENT_SECONDS"
 is_positive_integer "$FRAME_MARKER_INTERVAL" || die "invalid FRAME_MARKER_INTERVAL=$FRAME_MARKER_INTERVAL"
 is_positive_integer "$HEARTBEAT_INTERVAL" || die "invalid HEARTBEAT_INTERVAL=$HEARTBEAT_INTERVAL"
@@ -163,6 +171,73 @@ cpu_ticks() {
   set -- ${line##*) }
   [ "$#" -ge 13 ] || return 1
   echo "$((${12} + ${13}))"
+}
+
+# The rvv_modify-data-stream experiment compares cumulative OAI statistics
+# immediately before and after measurement. Snapshots stay in the temporary
+# work directory and are removed after the single CSV has been exported.
+snapshot_stats() {
+  local source="$1" target="$2"
+  [ -s "$source" ] || return 0
+  cp "$source" "$target" 2>/dev/null || true
+}
+
+append_window_stats_rows() {
+  local side="$1" start_file="$2" end_file="$3" output_file="$4"
+  [ -s "$start_file" ] && [ -s "$end_file" ] || return 0
+  LC_ALL=C awk -v side="$side" '
+    function trim(s) {
+      sub(/^[[:space:]]+/, "", s)
+      sub(/[[:space:]]+$/, "", s)
+      return s
+    }
+    function parse(line, fields, colon) {
+      colon = index(line, ":")
+      if (!colon) return 0
+      parsed_name = trim(substr(line, 1, colon - 1))
+      if (split(substr(line, colon + 1), fields, ";") < 3) return 0
+      parsed_avg = fields[1]
+      parsed_count = fields[2]
+      parsed_max = fields[3]
+      gsub(/[^0-9.eE+-]/, "", parsed_avg)
+      gsub(/[^0-9]/, "", parsed_count)
+      gsub(/[^0-9.eE+-]/, "", parsed_max)
+      return parsed_name != "" && parsed_avg != "" && parsed_count != "" && parsed_max != ""
+    }
+    FILENAME == ARGV[1] {
+      if (parse($0)) {
+        start_avg[parsed_name] = parsed_avg + 0
+        start_count[parsed_name] = parsed_count + 0
+      }
+      next
+    }
+    {
+      if (parse($0)) {
+        end_avg[parsed_name] = parsed_avg + 0
+        end_count[parsed_name] = parsed_count + 0
+        end_max[parsed_name] = parsed_max + 0
+      }
+    }
+    END {
+      for (name in end_count) {
+        if (!(name in start_count)) continue
+        delta_count = end_count[name] - start_count[name]
+        if (delta_count <= 0) continue
+        delta_total = end_avg[name] * end_count[name] - start_avg[name] * start_count[name]
+        window_avg = delta_total / delta_count
+        key = name
+        gsub(/[^A-Za-z0-9]+/, "_", key)
+        sub(/^_+/, "", key)
+        sub(/_+$/, "", key)
+        if (key == "") continue
+        printf "%s_%s_window_avg_us,%.6f,microseconds\n", side, key, window_avg
+        printf "%s_%s_window_calls,%d,calls\n", side, key, delta_count
+        printf "%s_%s_start_calls,%d,calls\n", side, key, start_count[name]
+        printf "%s_%s_end_calls,%d,calls\n", side, key, end_count[name]
+        printf "%s_%s_end_cumulative_max_us,%.6f,microseconds\n", side, key, end_max[name]
+      }
+    }
+  ' "$start_file" "$end_file" >>"$output_file"
 }
 
 prepare_scheduler() {
@@ -318,10 +393,10 @@ wait_for_frame_markers() {
   return 1
 }
 
-# Time-bounded experiment: 30 seconds is shorter than one 128-frame marker
-# on this FPGA.  Zero observed markers is valid and must not fabricate a rate.
+# Time-bounded warm-up and measurement. Zero observed markers is valid and
+# must not be misreported as zero throughput.
 wait_for_measurement_window() {
-  local counter_file="$1" baseline="$2" pid="$3" seconds="$4"
+  local counter_file="$1" baseline="$2" pid="$3" seconds="$4" phase="${5:-measurement}"
   local started now elapsed current state
   started=$(uptime_seconds) || return 4
   while :; do
@@ -337,7 +412,7 @@ wait_for_measurement_window() {
     if [ "$elapsed" -ge "$seconds" ]; then
       observed_frame_markers=$((current - baseline))
       [ "$observed_frame_markers" -ge 0 ] || observed_frame_markers=0
-      freeze_workload
+      [ "$phase" = warmup ] || freeze_workload
       return 0
     fi
     sleep 1
@@ -490,7 +565,7 @@ run_once() {
   gnb_fifo="$work_dir/gnb-output.fifo"
   nrue_fifo="$work_dir/nrue-output.fifo"
 
-  echo "[oai-xsai-perf] run=$run_no profile=newwork channel=ideal prbs=24 measurement=${MEASUREMENT_SECONDS}s warmup=0s"
+  echo "[oai-xsai-perf] run=$run_no profile=newwork channel=ideal prbs=24 warmup=${WARMUP_SECONDS}s measurement=${MEASUREMENT_SECONDS}s"
   prepare_scheduler
 
   cd "$work_dir" || die "cannot enter $work_dir"
@@ -546,7 +621,17 @@ run_once() {
     tail -120 "$nrue_events" 2>/dev/null || true
     die "nrUE did not synchronize"
   fi
-  echo '[oai-xsai-perf] UE synchronized; starting measurement immediately'
+  echo "[oai-xsai-perf] UE synchronized; warming up for ${WARMUP_SECONDS}s"
+  warmup_start_uptime=$(uptime_seconds)
+  warmup_markers=$(read_counter "$gnb_counter") || die 'invalid warm-up counter'
+  if wait_for_measurement_window "$gnb_counter" "$warmup_markers" "$gnb_pid" "$WARMUP_SECONDS" warmup; then :; else
+    rc=$?
+    die "warm-up failed rc=$rc"
+  fi
+  warmup_end_uptime=$(uptime_seconds)
+  warmup_elapsed_seconds=$((warmup_end_uptime - warmup_start_uptime))
+  snapshot_stats "$work_dir/nrL1_stats.log" "$work_dir/start-nrL1_stats.log"
+  snapshot_stats "$work_dir/nrL1_UE_stats-0.log" "$work_dir/start-nrL1_UE_stats-0.log"
   start_markers=$(read_counter "$gnb_counter") || die "invalid initial counter"
   start_uptime=$(uptime_seconds)
   start_gnb_ticks=$(cpu_ticks "$gnb_pid") || die 'cannot sample gNB CPU ticks'
@@ -557,7 +642,7 @@ run_once() {
     freeze_workload
     diagnose "measurement rc=$rc (1=timeout 2=workload-exit/fatal 3=collector-exit 4=invalid-state)"
     tail -100 "$gnb_events" 2>/dev/null || true
-    die '30-second measurement window failed'
+    die "${MEASUREMENT_SECONDS}-second measurement window failed"
   fi
   end_uptime=$(uptime_seconds)
   end_gnb_ticks=$(cpu_ticks "$gnb_pid") || die 'cannot sample final gNB CPU ticks'
@@ -569,9 +654,15 @@ run_once() {
   gnb_cpu_ticks=$((end_gnb_ticks - start_gnb_ticks))
   nrue_cpu_ticks=$((end_nrue_ticks - start_nrue_ticks))
 
-  echo '[oai-xsai-perf] stage=cleanup'
-  cleanup || die 'measurement completed but cleanup failed'
-  purge_transient
+  snapshot_stats "$work_dir/nrL1_stats.log" "$work_dir/end-nrL1_stats.log"
+  snapshot_stats "$work_dir/nrL1_UE_stats-0.log" "$work_dir/end-nrL1_UE_stats-0.log"
+  stats_rows="$work_dir/stats-rows.csv"
+  : >"$stats_rows" || die 'cannot create module statistics rows'
+  append_window_stats_rows gNB "$work_dir/start-nrL1_stats.log" "$work_dir/end-nrL1_stats.log" "$stats_rows"
+  append_window_stats_rows nrUE "$work_dir/start-nrL1_UE_stats-0.log" "$work_dir/end-nrL1_UE_stats-0.log" "$stats_rows"
+  stats_row_count=$(awk 'END { print NR+0 }' "$stats_rows")
+
+  csv_tmp="$work_dir/oai-xsai-newwork.csv"
   csv="$RESULTS_DIR/oai-xsai-newwork.csv"
   {
     echo 'metric,value,unit'
@@ -579,6 +670,8 @@ run_once() {
     echo 'channel,ideal,text'
     echo 'prbs,24,resource_blocks'
     echo 'subcarrier_spacing_khz,30,kilohertz'
+    echo "warmup_target_seconds,$WARMUP_SECONDS,seconds"
+    echo "warmup_elapsed_guest_seconds,$warmup_elapsed_seconds,seconds"
     echo "measurement_target_seconds,$MEASUREMENT_SECONDS,seconds"
     echo "elapsed_guest_seconds,$elapsed_seconds,seconds"
     echo "observed_frame_markers,$observed_markers,markers"
@@ -591,8 +684,19 @@ run_once() {
     else
       echo 'confirmed_frames_per_guest_second_lower_bound,NA,frames_per_second'
     fi
+    echo "module_stats_window_metrics,$((stats_row_count / 5)),modules"
+    if [ "$stats_row_count" -gt 0 ]; then
+      echo 'module_stats_window_available,1,boolean'
+      cat "$stats_rows"
+    else
+      echo 'module_stats_window_available,0,boolean'
+    fi
     echo 'result,PASS,status'
-  } >"$csv" || die "cannot write $csv"
+  } >"$csv_tmp" || die "cannot write $csv_tmp"
+  echo '[oai-xsai-perf] stage=cleanup'
+  cleanup || die 'measurement completed but cleanup failed'
+  mv "$csv_tmp" "$csv" || die "cannot publish $csv"
+  purge_transient
   echo '[oai-xsai-perf] OAI_XSAI_CSV_BEGIN'
   cat "$csv" || die 'cannot export CSV'
   echo '[oai-xsai-perf] OAI_XSAI_CSV_END'

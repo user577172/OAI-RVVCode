@@ -17,7 +17,7 @@ run_case() (
   GNB_CONF=/dev/null UE_CONF=/dev/null
   RESULTS_DIR="$test_dir/$1"
   mkdir -p "$RESULTS_DIR"
-  MEASUREMENT_SECONDS=2 SYNC_TIMEOUT=10 GNB_READY_TIMEOUT=10
+  WARMUP_SECONDS=1 MEASUREMENT_SECONDS=3 SYNC_TIMEOUT=10 GNB_READY_TIMEOUT=10
   FRAME_MARKER_INTERVAL=128 HEARTBEAT_INTERVAL=5 CLEANUP_TIMEOUT=2 OAI_KEEP_EVENTS=0
   GNB_THREAD_POOL=-1 UE_THREAD_POOL=-1,-1
   gnb_pid= nrue_pid= gnb_pgid= nrue_pgid= gnb_monitor_pid= nrue_monitor_pid=
@@ -49,6 +49,11 @@ grep -q 'OAI_XSAI_CLEANUP_RESULT=PASS' "$test_dir/pass.log"
 grep -q '^OAI_XSAI_PERF_RESULT=PASS' "$test_dir/pass.log"
 [ "$(find "$test_dir/pass" -type f | wc -l)" -eq 1 ]
 grep -qx 'result,PASS,status' "$test_dir/pass/oai-xsai-newwork.csv"
+grep -qx 'warmup_target_seconds,1,seconds' "$test_dir/pass/oai-xsai-newwork.csv"
+grep -qx 'measurement_target_seconds,3,seconds' "$test_dir/pass/oai-xsai-newwork.csv"
+grep -qx 'module_stats_window_available,1,boolean' "$test_dir/pass/oai-xsai-newwork.csv"
+grep -q '^gNB_feptx_total_window_avg_us,' "$test_dir/pass/oai-xsai-newwork.csv"
+grep -q '^nrUE_OFDM_MOD_STATS_window_avg_us,' "$test_dir/pass/oai-xsai-newwork.csv"
 echo 'PASS: production run retains only the CSV after successful cleanup'
 if run_case fail >"$test_dir/fail.log" 2>&1; then
   cat "$test_dir/fail.log"; echo 'FAIL: cleanup fault returned success'; exit 1

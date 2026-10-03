@@ -28,7 +28,8 @@ Environment overrides:
   FPGA_WORKLOAD (performance|pbch, default: performance),
   FPGA_PERF_SYNC_TIMEOUT (default: 1800),
   FPGA_PERF_GNB_READY_TIMEOUT (default: 900),
-  FPGA_PERF_MEASUREMENT_SECONDS (default: 30 after UE synchronization),
+  FPGA_PERF_WARMUP_SECONDS (default: 20 after UE synchronization),
+  FPGA_PERF_MEASUREMENT_SECONDS (default: 120 after warm-up),
   FPGA_PERF_HEARTBEAT_INTERVAL (default: 60),
   FPGA_CLEANUP_TIMEOUT (default: 15 guest seconds),
   XSAI_MEMORY_SIZE_HUMAN (default: 4GB),
@@ -60,7 +61,8 @@ nexst_dir="${NEXST_DIR:-${HOME}/nexst}"
 fpga_workload="${FPGA_WORKLOAD:-performance}"
 fpga_perf_sync_timeout="${FPGA_PERF_SYNC_TIMEOUT:-1800}"
 fpga_perf_gnb_ready_timeout="${FPGA_PERF_GNB_READY_TIMEOUT:-900}"
-fpga_perf_measurement_seconds="${FPGA_PERF_MEASUREMENT_SECONDS:-30}"
+fpga_perf_warmup_seconds="${FPGA_PERF_WARMUP_SECONDS:-20}"
+fpga_perf_measurement_seconds="${FPGA_PERF_MEASUREMENT_SECONDS:-120}"
 fpga_perf_heartbeat_interval="${FPGA_PERF_HEARTBEAT_INTERVAL:-60}"
 fpga_cleanup_timeout="${FPGA_CLEANUP_TIMEOUT:-15}"
 xsai_memory_size_human="${XSAI_MEMORY_SIZE_HUMAN:-4GB}"
@@ -82,6 +84,10 @@ for value in "$fpga_perf_sync_timeout" "$fpga_perf_gnb_ready_timeout" \
         exit 1
     }
 done
+[[ "$fpga_perf_warmup_seconds" =~ ^[0-9]+$ ]] || {
+    echo "Error: FPGA warm-up seconds must be a nonnegative integer" >&2
+    exit 1
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -195,6 +201,7 @@ printf '%s\n' "$fpga_workload" >"$bundle_dir/etc/fpga-workload"
 cat >"$bundle_dir/etc/fpga-performance.conf" <<EOF
 SYNC_TIMEOUT=$fpga_perf_sync_timeout
 GNB_READY_TIMEOUT=$fpga_perf_gnb_ready_timeout
+WARMUP_SECONDS=$fpga_perf_warmup_seconds
 MEASUREMENT_SECONDS=$fpga_perf_measurement_seconds
 FRAME_MARKER_INTERVAL=128
 HEARTBEAT_INTERVAL=$fpga_perf_heartbeat_interval
@@ -248,7 +255,7 @@ export OAI_BUNDLE_ROOT=/opt/oai
 
 if [ -r /opt/oai/etc/fpga-performance.conf ]; then
     . /opt/oai/etc/fpga-performance.conf
-    export MEASUREMENT_SECONDS SYNC_TIMEOUT GNB_READY_TIMEOUT
+    export WARMUP_SECONDS MEASUREMENT_SECONDS SYNC_TIMEOUT GNB_READY_TIMEOUT
     export FRAME_MARKER_INTERVAL
     export HEARTBEAT_INTERVAL GNB_THREAD_POOL UE_THREAD_POOL
     export CLEANUP_TIMEOUT
