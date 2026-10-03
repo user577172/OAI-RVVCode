@@ -17,6 +17,7 @@ MEASUREMENT_SECONDS="${MEASUREMENT_SECONDS:-120}"
 FRAME_MARKER_INTERVAL="${FRAME_MARKER_INTERVAL:-128}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"
 CLEANUP_TIMEOUT="${CLEANUP_TIMEOUT:-15}"
+STATS_READY_TIMEOUT="${STATS_READY_TIMEOUT:-30}"
 OAI_KEEP_EVENTS="${OAI_KEEP_EVENTS:-0}"
 GNB_THREAD_POOL="${GNB_THREAD_POOL:--1}"
 UE_THREAD_POOL="${UE_THREAD_POOL:--1,-1}"
@@ -51,6 +52,7 @@ is_positive_integer "$MEASUREMENT_SECONDS" || die "invalid MEASUREMENT_SECONDS=$
 is_positive_integer "$FRAME_MARKER_INTERVAL" || die "invalid FRAME_MARKER_INTERVAL=$FRAME_MARKER_INTERVAL"
 is_positive_integer "$HEARTBEAT_INTERVAL" || die "invalid HEARTBEAT_INTERVAL=$HEARTBEAT_INTERVAL"
 is_positive_integer "$CLEANUP_TIMEOUT" || die "invalid CLEANUP_TIMEOUT=$CLEANUP_TIMEOUT"
+is_positive_integer "$STATS_READY_TIMEOUT" || die "invalid STATS_READY_TIMEOUT=$STATS_READY_TIMEOUT"
 is_positive_integer "$REPEATS" || die "repeat count must be positive"
 is_positive_integer "$START_RUN" || die "start run must be positive"
 [ "$REPEATS" -eq 1 ] || die 'NEWwork exports exactly one CSV per boot'
@@ -173,13 +175,48 @@ cpu_ticks() {
   echo "$((${12} + ${13}))"
 }
 
+# OAI creates these statistics threads at RR/1. On a busy single-HART FPGA,
+# RR/97 radio workers may prevent them from ever writing a fresh sample.
+# They sleep between samples, so briefly running them at RR/98 lets the
+# cumulative per-module counters advance without changing radio worker policy.
+promote_stats_threads() {
+  local pid="$1" expected="$2" task comm tid name found=0
+  for task in /proc/"$pid"/task/[0-9]*; do
+    [ -r "$task/comm" ] || continue
+    read -r name <"$task/comm" || continue
+    case "$name" in
+      "$expected")
+        tid=${task##*/}
+        chrt -r -p 98 "$tid" >/dev/null 2>&1 || die "cannot schedule $name (tid=$tid) for performance sampling"
+        found=$((found + 1))
+        ;;
+    esac
+  done
+  echo "[oai-xsai-perf] stats_thread=$expected priority=RR:98 count=$found"
+}
+
+wait_for_stats_files() {
+  local started now elapsed
+  started=$(uptime_seconds) || return 1
+  while :; do
+    if [ -s "$work_dir/nrL1_stats.log" ] && [ -s "$work_dir/nrL1_UE_stats-0.log" ]; then
+      return 0
+    fi
+    now=$(uptime_seconds) || return 1
+    elapsed=$((now - started))
+    [ "$elapsed" -lt "$STATS_READY_TIMEOUT" ] || return 1
+    process_is_live "$gnb_pid" && process_is_live "$nrue_pid" || return 1
+    sleep 1
+  done
+}
+
 # The rvv_modify-data-stream experiment compares cumulative OAI statistics
 # immediately before and after measurement. Snapshots stay in the temporary
 # work directory and are removed after the single CSV has been exported.
 snapshot_stats() {
   local source="$1" target="$2"
-  [ -s "$source" ] || return 0
-  cp "$source" "$target" 2>/dev/null || true
+  [ -s "$source" ] || die "missing module statistics: $source"
+  cp "$source" "$target" || die "cannot snapshot module statistics: $source"
 }
 
 append_window_stats_rows() {
@@ -622,6 +659,9 @@ run_once() {
     die "nrUE did not synchronize"
   fi
   echo "[oai-xsai-perf] UE synchronized; warming up for ${WARMUP_SECONDS}s"
+  promote_stats_threads "$gnb_pid" L1_stats
+  promote_stats_threads "$nrue_pid" L1_UE_stats_0
+  wait_for_stats_files || die "gNB/nrUE module statistics did not appear within ${STATS_READY_TIMEOUT}s"
   warmup_start_uptime=$(uptime_seconds)
   warmup_markers=$(read_counter "$gnb_counter") || die 'invalid warm-up counter'
   if wait_for_measurement_window "$gnb_counter" "$warmup_markers" "$gnb_pid" "$WARMUP_SECONDS" warmup; then :; else
@@ -659,8 +699,13 @@ run_once() {
   stats_rows="$work_dir/stats-rows.csv"
   : >"$stats_rows" || die 'cannot create module statistics rows'
   append_window_stats_rows gNB "$work_dir/start-nrL1_stats.log" "$work_dir/end-nrL1_stats.log" "$stats_rows"
+  gnb_stats_row_count=$(awk 'END { print NR+0 }' "$stats_rows")
   append_window_stats_rows nrUE "$work_dir/start-nrL1_UE_stats-0.log" "$work_dir/end-nrL1_UE_stats-0.log" "$stats_rows"
   stats_row_count=$(awk 'END { print NR+0 }' "$stats_rows")
+  nrue_stats_row_count=$((stats_row_count - gnb_stats_row_count))
+  if [ "$gnb_stats_row_count" -eq 0 ] || [ "$nrue_stats_row_count" -eq 0 ]; then
+    die "module performance counters did not advance: gNB_rows=$gnb_stats_row_count nrUE_rows=$nrue_stats_row_count"
+  fi
 
   csv_tmp="$work_dir/oai-xsai-newwork.csv"
   csv="$RESULTS_DIR/oai-xsai-newwork.csv"
@@ -685,12 +730,8 @@ run_once() {
       echo 'confirmed_frames_per_guest_second_lower_bound,NA,frames_per_second'
     fi
     echo "module_stats_window_metrics,$((stats_row_count / 5)),modules"
-    if [ "$stats_row_count" -gt 0 ]; then
-      echo 'module_stats_window_available,1,boolean'
-      cat "$stats_rows"
-    else
-      echo 'module_stats_window_available,0,boolean'
-    fi
+    echo 'module_stats_window_available,1,boolean'
+    cat "$stats_rows"
     echo 'result,PASS,status'
   } >"$csv_tmp" || die "cannot write $csv_tmp"
   echo '[oai-xsai-perf] stage=cleanup'
