@@ -48,18 +48,20 @@ check_order "$test_dir/pass.log"
 grep -q 'OAI_XSAI_CLEANUP_RESULT=PASS' "$test_dir/pass.log"
 grep -q '^OAI_XSAI_PERF_RESULT=PASS' "$test_dir/pass.log"
 [ "$(find "$test_dir/pass" -type f | wc -l)" -eq 1 ]
-grep -qx 'result,PASS,status' "$test_dir/pass/oai-xsai-newwork.csv"
-grep -qx 'warmup_target_seconds,1,seconds' "$test_dir/pass/oai-xsai-newwork.csv"
-grep -qx 'measurement_target_seconds,3,seconds' "$test_dir/pass/oai-xsai-newwork.csv"
-grep -qx 'module_stats_window_available,1,boolean' "$test_dir/pass/oai-xsai-newwork.csv"
-grep -q '^gNB_feptx_total_window_avg_us,' "$test_dir/pass/oai-xsai-newwork.csv"
-grep -q '^nrUE_OFDM_MOD_STATS_window_avg_us,' "$test_dir/pass/oai-xsai-newwork.csv"
+csv="$test_dir/pass/oai-xsai-newwork-ms.csv"
+grep -qx 'result,PASS,status' "$csv"
+grep -qx 'warmup_target_ms,1000,milliseconds' "$csv"
+grep -qx 'measurement_target_ms,3000,milliseconds' "$csv"
+grep -qx 'module_stats_window_available,1,boolean' "$csv"
+grep -qx 'gNB_feptx_total_window_avg_ms,0.100000000,milliseconds' "$csv"
+grep -qx 'nrUE_OFDM_MOD_STATS_window_avg_ms,0.040000000,milliseconds' "$csv"
+if grep -Eq ',(microseconds|seconds)$' "$csv"; then exit 1; fi
 echo 'PASS: production run retains only the CSV after successful cleanup'
 if run_case fail >"$test_dir/fail.log" 2>&1; then
   cat "$test_dir/fail.log"; echo 'FAIL: cleanup fault returned success'; exit 1
 fi
 grep -q 'OAI_XSAI_CLEANUP_RESULT=FAIL' "$test_dir/fail.log"
 if grep -q 'OAI_XSAI_PERF_RESULT=PASS' "$test_dir/fail.log"; then exit 1; fi
-[ ! -e "$test_dir/fail/oai-xsai-newwork.csv" ]
+[ ! -e "$test_dir/fail/oai-xsai-newwork-ms.csv" ]
 echo 'PASS: cleanup fault returns nonzero without exporting a passing CSV'
 echo 'ALL REPORT TESTS PASSED'

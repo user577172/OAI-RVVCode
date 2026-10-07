@@ -267,11 +267,11 @@ append_window_stats_rows() {
         sub(/^_+/, "", key)
         sub(/_+$/, "", key)
         if (key == "") continue
-        printf "%s_%s_window_avg_us,%.6f,microseconds\n", side, key, window_avg
+        printf "%s_%s_window_avg_ms,%.9f,milliseconds\n", side, key, window_avg / 1000
         printf "%s_%s_window_calls,%d,calls\n", side, key, delta_count
         printf "%s_%s_start_calls,%d,calls\n", side, key, start_count[name]
         printf "%s_%s_end_calls,%d,calls\n", side, key, end_count[name]
-        printf "%s_%s_end_cumulative_max_us,%.6f,microseconds\n", side, key, end_max[name]
+        printf "%s_%s_end_cumulative_max_ms,%.9f,milliseconds\n", side, key, end_max[name] / 1000
       }
     }
   ' "$start_file" "$end_file" >>"$output_file"
@@ -707,18 +707,18 @@ run_once() {
     die "module performance counters did not advance: gNB_rows=$gnb_stats_row_count nrUE_rows=$nrue_stats_row_count"
   fi
 
-  csv_tmp="$work_dir/oai-xsai-newwork.csv"
-  csv="$RESULTS_DIR/oai-xsai-newwork.csv"
+  csv_tmp="$work_dir/oai-xsai-newwork-ms.csv"
+  csv="$RESULTS_DIR/oai-xsai-newwork-ms.csv"
   {
     echo 'metric,value,unit'
     echo 'profile,newwork,text'
     echo 'channel,ideal,text'
     echo 'prbs,24,resource_blocks'
     echo 'subcarrier_spacing_khz,30,kilohertz'
-    echo "warmup_target_seconds,$WARMUP_SECONDS,seconds"
-    echo "warmup_elapsed_guest_seconds,$warmup_elapsed_seconds,seconds"
-    echo "measurement_target_seconds,$MEASUREMENT_SECONDS,seconds"
-    echo "elapsed_guest_seconds,$elapsed_seconds,seconds"
+    echo "warmup_target_ms,$((WARMUP_SECONDS * 1000)),milliseconds"
+    echo "warmup_elapsed_guest_ms,$((warmup_elapsed_seconds * 1000)),milliseconds"
+    echo "measurement_target_ms,$((MEASUREMENT_SECONDS * 1000)),milliseconds"
+    echo "elapsed_guest_ms,$((elapsed_seconds * 1000)),milliseconds"
     echo "observed_frame_markers,$observed_markers,markers"
     echo "marker_interval_frames,$FRAME_MARKER_INTERVAL,frames_per_marker"
     echo "confirmed_frames_lower_bound,$confirmed_frames,frames"
